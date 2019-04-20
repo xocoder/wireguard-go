@@ -255,6 +255,7 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 	)
 
 	if msg.Type != MessageInitiationType {
+		device.log.Debug.Printf("ConsumeMessageInitiation: not an initiation message")
 		return nil
 	}
 
@@ -277,6 +278,7 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 	aead, _ := chacha20poly1305.New(key[:])
 	_, err = aead.Open(peerPK[:0], ZeroNonce[:], msg.Static[:], hash[:])
 	if err != nil {
+		device.log.Debug.Printf("ConsumeMessageInitiation: failed to decrypt static key")
 		return nil
 	}
 	mixHash(&hash, &hash, msg.Static[:])
@@ -285,6 +287,7 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 
 	peer := device.LookupPeer(peerPK)
 	if peer == nil {
+		device.log.Debug.Printf("ConsumeMessageInitiation: could not find peer by public key: %s", peerPK.ToHex())
 		return nil
 	}
 
@@ -298,6 +301,7 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 
 	if isZero(handshake.precomputedStaticStatic[:]) {
 		handshake.mutex.RUnlock()
+		device.log.Debug.Printf("ConsumeMessageInitiation: zero precomputed static")
 		return nil
 	}
 	KDF2(
@@ -310,6 +314,7 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 	_, err = aead.Open(timestamp[:0], ZeroNonce[:], msg.Timestamp[:], hash[:])
 	if err != nil {
 		handshake.mutex.RUnlock()
+		device.log.Debug.Printf("ConsumeMessageInitiation: handshake decrypt failed")
 		return nil
 	}
 	mixHash(&hash, &hash, msg.Timestamp[:])
