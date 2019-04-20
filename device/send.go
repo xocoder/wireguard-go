@@ -8,6 +8,7 @@ package device
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -156,6 +157,12 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 	peer.handshake.mutex.Unlock()
 
 	peer.device.log.Debug.Println(peer, "- Sending handshake initiation")
+	peer.RLock()
+	endpoint := peer.endpoint
+	peer.RUnlock()
+	if endpoint == nil {
+		return errors.New("no peer endpoint; skipped")
+	}
 
 	msg, err := peer.device.CreateMessageInitiation(peer)
 	if err != nil {
