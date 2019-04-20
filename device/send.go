@@ -8,6 +8,7 @@ package device
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -126,7 +127,7 @@ func (peer *Peer) SendKeepalive() bool {
 	elem.packet = nil
 	select {
 	case peer.queue.nonce <- elem:
-		peer.device.log.Debug.Println(peer, "- Sending keepalive packet")
+		//peer.device.log.Debug.Println(peer, "- Sending keepalive packet")
 		return true
 	default:
 		peer.device.PutMessageBuffer(elem.buffer)
@@ -155,7 +156,14 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 	peer.handshake.lastSentHandshake = time.Now()
 	peer.handshake.mutex.Unlock()
 
-	peer.device.log.Debug.Println(peer, "- Sending handshake initiation")
+	peer.RLock()
+	endpoint := peer.endpoint
+	peer.RUnlock()
+	if endpoint == nil {
+		return errors.New("no peer endpoint; skipped")
+	}
+
+	peer.device.log.Debug.Printf("%v - %v Sending handshake init %v", peer, peer.device, peer.endpoint)
 
 	msg, err := peer.device.CreateMessageInitiation(peer)
 	if err != nil {
@@ -174,7 +182,7 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 
 	err = peer.SendBuffer(packet)
 	if err != nil {
-		peer.device.log.Error.Println(peer, "- Failed to send handshake initiation", err)
+		peer.device.log.Error.Println(peer, "- Failed to send handshake initiation:", err)
 	}
 	peer.timersHandshakeInitiated()
 
@@ -257,11 +265,11 @@ func (device *Device) RoutineReadFromTUN() {
 	logError := device.log.Error
 
 	defer func() {
-		logDebug.Println("Routine: TUN reader - stopped")
+		//logDebug.Println("Routine: TUN reader - stopped")
 		device.state.stopping.Done()
 	}()
 
-	logDebug.Println("Routine: TUN reader - started")
+	//logDebug.Println("Routine: TUN reader - started")
 	device.state.starting.Done()
 
 	var elem *QueueOutboundElement
@@ -367,13 +375,13 @@ func (peer *Peer) RoutineNonce() {
 
 	defer func() {
 		flush()
-		logDebug.Println(peer, "- Routine: nonce worker - stopped")
+		//logDebug.Println(peer, "- Routine: nonce worker - stopped")
 		peer.queue.packetInNonceQueueIsAwaitingKey.Set(false)
 		peer.routines.stopping.Done()
 	}()
 
 	peer.routines.starting.Done()
-	logDebug.Println(peer, "- Routine: nonce worker - started")
+	//logDebug.Println(peer, "- Routine: nonce worker - started")
 
 NextPacket:
 	for {
@@ -418,7 +426,7 @@ NextPacket:
 
 				// wait for key to be established
 
-				logDebug.Println(peer, "- Awaiting keypair")
+				//logDebug.Println(peer, "- Awaiting keypair")
 
 				select {
 				case <-peer.signals.newKeypairArrived:
@@ -490,7 +498,7 @@ func (device *Device) RoutineEncryption() {
 
 	var nonce [chacha20poly1305.NonceSize]byte
 
-	logDebug := device.log.Debug
+	//logDebug := device.log.Debug
 
 	defer func() {
 		for {
@@ -506,11 +514,11 @@ func (device *Device) RoutineEncryption() {
 			}
 		}
 	out:
-		logDebug.Println("Routine: encryption worker - stopped")
+		//logDebug.Println("Routine: encryption worker - stopped")
 		device.state.stopping.Done()
 	}()
 
-	logDebug.Println("Routine: encryption worker - started")
+	//logDebug.Println("Routine: encryption worker - started")
 	device.state.starting.Done()
 
 	for {
@@ -575,7 +583,7 @@ func (peer *Peer) RoutineSequentialSender() {
 
 	device := peer.device
 
-	logDebug := device.log.Debug
+	//logDebug := device.log.Debug
 	logError := device.log.Error
 
 	defer func() {
@@ -594,11 +602,11 @@ func (peer *Peer) RoutineSequentialSender() {
 			}
 		}
 	out:
-		logDebug.Println(peer, "- Routine: sequential sender - stopped")
+		//logDebug.Println(peer, "- Routine: sequential sender - stopped")
 		peer.routines.stopping.Done()
 	}()
 
-	logDebug.Println(peer, "- Routine: sequential sender - started")
+	//logDebug.Println(peer, "- Routine: sequential sender - started")
 
 	peer.routines.starting.Done()
 
