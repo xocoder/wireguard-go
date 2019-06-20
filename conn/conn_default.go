@@ -8,6 +8,8 @@
 package conn
 
 import (
+	"context"
+	"fmt"
 	"net"
 	"os"
 	"syscall"
@@ -67,10 +69,13 @@ func (e *NativeEndpoint) SrcToString() string {
 }
 
 func listenNet(network string, port int) (*net.UDPConn, int, error) {
-	conn, err := net.ListenUDP(network, &net.UDPAddr{Port: port})
+	ctx := context.Background()
+	lc := net.ListenConfig{Control: netControl} // sets SO_REUSEADDR
+	packetConn, err := lc.ListenPacket(ctx, network, fmt.Sprintf(":%d", port))
 	if err != nil {
 		return nil, 0, err
 	}
+	conn := packetConn.(*net.UDPConn)
 
 	// Retrieve port.
 	laddr := conn.LocalAddr()
