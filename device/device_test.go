@@ -146,7 +146,9 @@ NextAttempt:
 			} else {
 				p.ip = net.ParseIP("1.0.0.2")
 			}
-			p.dev = NewDevice(p.tun.TUN(), NewLogger(LogLevelDebug, fmt.Sprintf("dev%d: ", i)))
+			p.dev = NewDevice(p.tun.TUN(), &DeviceOptions{
+				Logger: NewLogger(LogLevelDebug, fmt.Sprintf("dev%d: ", i)),
+			})
 			p.dev.Up()
 			if err := p.dev.IpcSetOperation(cfg[i]); err != nil {
 				// genConfigs attempted to pick ports that were free.
@@ -273,7 +275,9 @@ func randDevice(t *testing.T) *Device {
 	}
 	tun := newDummyTUN("dummy")
 	logger := NewLogger(LogLevelError, "")
-	device := NewDevice(tun, logger)
+	device := NewDevice(tun, &DeviceOptions{
+		Logger: logger,
+	})
 	device.SetPrivateKey(sk)
 	return device
 }

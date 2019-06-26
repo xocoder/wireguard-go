@@ -16,7 +16,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/ipc"
 )
 
@@ -308,7 +307,10 @@ func (device *Device) IpcSetOperation(r io.Reader) error {
 				err := func() error {
 					peer.Lock()
 					defer peer.Unlock()
-					endpoint, err := conn.CreateEndpoint(value)
+					peer.handshake.mutex.Lock()
+					defer peer.handshake.mutex.Unlock()
+					key := peer.handshake.remoteStatic
+					endpoint, err := device.createEndpoint(key, value)
 					if err != nil {
 						return err
 					}
