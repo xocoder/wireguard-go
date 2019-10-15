@@ -604,10 +604,7 @@ func (peer *Peer) RoutineSequentialReceiver() {
 
 			src := elem.packet[IPv4offsetSrc : IPv4offsetSrc+net.IPv4len]
 			if device.allowedips.LookupIPv4(src) != peer {
-				logInfo.Println(
-					"IPv4 packet with disallowed source address from",
-					peer,
-				)
+				logInfo.Printf("IPv4 packet with disallowed source address %s from %v", net.IP(src), peer)
 				continue
 			}
 
