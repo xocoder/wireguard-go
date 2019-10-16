@@ -107,13 +107,8 @@ func TestTwoDevicePing(t *testing.T) {
 }
 
 func TestSimultaneousHandshake(t *testing.T) {
+	const maxWait = 300 * time.Millisecond
 	cfg1, cfg2 := genConfigs(t)
-
-	// TODO(crawshaw): this is a handshake race between the peers.
-	// The value for maxWait should be safely 300 milliseconds, but
-	// it takes multiple seconds for the simultaneous handshakes
-	// to resolve a session key.
-	const maxWait = 6 * time.Second
 
 	tun1 := tuntest.NewChannelTUN()
 	dev1 := NewDevice(tun1.TUN(), &DeviceOptions{
