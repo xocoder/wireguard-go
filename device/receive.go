@@ -433,7 +433,13 @@ func (device *Device) RoutineHandshake() {
 			logDebug.Println(peer, "- Received handshake initiation")
 			atomic.AddUint64(&peer.stats.rxBytes, uint64(len(elem.packet)))
 
-			peer.SendHandshakeResponse()
+			peer.handshake.mutex.Lock()
+			phs := peer.handshake.state
+			peer.handshake.mutex.Unlock()
+
+			if phs == handshakeInitiationConsumed {
+				peer.SendHandshakeResponse()
+			}
 
 		case MessageResponseType:
 
