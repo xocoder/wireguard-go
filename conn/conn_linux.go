@@ -74,33 +74,39 @@ func CreateEndpoint(s string) (Endpoint, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err := end.UpdateDst(addr); err != nil {
+		return nil, err
+	}
+	return &end, nil
+}
 
+func (e *NativeEndpoint) UpdateDst(addr *net.UDPAddr) error {
 	ipv4 := addr.IP.To4()
 	if ipv4 != nil {
-		dst := end.dst4()
-		end.isV6 = false
+		dst := e.dst4()
+		e.isV6 = false
 		dst.Port = addr.Port
 		copy(dst.Addr[:], ipv4)
-		end.ClearSrc()
-		return &end, nil
+		e.ClearSrc()
+		return nil
 	}
 
 	ipv6 := addr.IP.To16()
 	if ipv6 != nil {
 		zone, err := zoneToUint32(addr.Zone)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		dst := end.dst6()
-		end.isV6 = true
+		dst := e.dst6()
+		e.isV6 = true
 		dst.Port = addr.Port
 		dst.ZoneId = zone
 		copy(dst.Addr[:], ipv6[:])
-		end.ClearSrc()
-		return &end, nil
+		e.ClearSrc()
+		return nil
 	}
 
-	return nil, errors.New("Invalid IP address")
+	return errors.New("Invalid IP address")
 }
 
 func createBind(port uint16) (Bind, uint16, error) {
@@ -192,30 +198,30 @@ func (bind *nativeBind) Close() error {
 	return err2
 }
 
-func (bind *nativeBind) ReceiveIPv6(buff []byte) (int, Endpoint, error) {
+func (bind *nativeBind) ReceiveIPv6(buff []byte) (int, Endpoint, *net.UDPAddr, error) {
 	var end NativeEndpoint
 	if bind.sock6 == -1 {
-		return 0, nil, syscall.EAFNOSUPPORT
+		return 0, nil, nil, syscall.EAFNOSUPPORT
 	}
-	n, err := receive6(
+	n, addr, err := receive6(
 		bind.sock6,
 		buff,
 		&end,
 	)
-	return n, &end, err
+	return n, &end, addr, err
 }
 
-func (bind *nativeBind) ReceiveIPv4(buff []byte) (int, Endpoint, error) {
+func (bind *nativeBind) ReceiveIPv4(buff []byte) (int, Endpoint, *net.UDPAddr, error) {
 	var end NativeEndpoint
 	if bind.sock4 == -1 {
-		return 0, nil, syscall.EAFNOSUPPORT
+		return 0, nil, nil, syscall.EAFNOSUPPORT
 	}
-	n, err := receive4(
+	n, addr, err := receive4(
 		bind.sock4,
 		buff,
 		&end,
 	)
-	return n, &end, err
+	return n, &end, addr, err
 }
 
 func (bind *nativeBind) Send(buff []byte, end Endpoint) error {
@@ -271,7 +277,10 @@ func (end *NativeEndpoint) SrcToString() string {
 	return end.SrcIP().String()
 }
 
-func (end *NativeEndpoint) DstToString() string {
+// TODO(apenwarr): I think this creates garbage collector load.
+// Probably need to cache the net.UDPAddr alongside the sockaddr, or
+// eliminate the use of net.UDPAddr elsewhere in the wireguard code.
+func (end *NativeEndpoint) dstAsUDPAddr() *net.UDPAddr {
 	var udpAddr net.UDPAddr
 	udpAddr.IP = end.DstIP()
 	if !end.isV6 {
@@ -279,7 +288,11 @@ func (end *NativeEndpoint) DstToString() string {
 	} else {
 		udpAddr.Port = end.dst6().Port
 	}
-	return udpAddr.String()
+	return &udpAddr
+}
+
+func (end *NativeEndpoint) DstToString() string {
+	return end.dstAsUDPAddr().String()
 }
 
 func (end *NativeEndpoint) ClearDst() {
@@ -487,7 +500,7 @@ func send6(sock int, end *NativeEndpoint, buff []byte) error {
 	return err
 }
 
-func receive4(sock int, buff []byte, end *NativeEndpoint) (int, error) {
+func receive4(sock int, buff []byte, end *NativeEndpoint) (int, *net.UDPAddr, error) {
 
 	// construct message header
 
@@ -499,7 +512,7 @@ func receive4(sock int, buff []byte, end *NativeEndpoint) (int, error) {
 	size, _, _, newDst, err := unix.Recvmsg(sock, buff, (*[unsafe.Sizeof(cmsg)]byte)(unsafe.Pointer(&cmsg))[:], 0)
 
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	end.isV6 = false
 
@@ -516,10 +529,10 @@ func receive4(sock int, buff []byte, end *NativeEndpoint) (int, error) {
 		end.src4().Ifindex = cmsg.pktinfo.Ifindex
 	}
 
-	return size, nil
+	return size, end.dstAsUDPAddr(), nil
 }
 
-func receive6(sock int, buff []byte, end *NativeEndpoint) (int, error) {
+func receive6(sock int, buff []byte, end *NativeEndpoint) (int, *net.UDPAddr, error) {
 
 	// construct message header
 
@@ -531,7 +544,7 @@ func receive6(sock int, buff []byte, end *NativeEndpoint) (int, error) {
 	size, _, _, newDst, err := unix.Recvmsg(sock, buff, (*[unsafe.Sizeof(cmsg)]byte)(unsafe.Pointer(&cmsg))[:], 0)
 
 	if err != nil {
-		return 0, err
+		return 0, nil, err
 	}
 	end.isV6 = true
 
@@ -548,5 +561,5 @@ func receive6(sock int, buff []byte, end *NativeEndpoint) (int, error) {
 		end.dst6().ZoneId = cmsg.pktinfo.Ifindex
 	}
 
-	return size, nil
+	return size, end.dstAsUDPAddr(), nil
 }
