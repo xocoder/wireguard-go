@@ -148,12 +148,13 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 
 	peer.RLock()
 	endpoint := peer.endpoint
+	device := peer.device
 	peer.RUnlock()
 	if endpoint == nil {
 		return errors.New("no peer endpoint; skipped")
 	}
 
-	peer.device.log.Debug.Printf("%v - %v Sending handshake init %v", peer, peer.device, peer.endpoint)
+	device.log.Debug.Printf("%v - %v Send handshake init %v", peer, device, endpoint)
 
 	msg, err := peer.device.CreateMessageInitiation(peer)
 	if err != nil {
@@ -184,7 +185,10 @@ func (peer *Peer) SendHandshakeResponse() error {
 	peer.handshake.lastSentHandshake = time.Now()
 	peer.handshake.mutex.Unlock()
 
-	peer.device.log.Debug.Println(peer, "- Sending handshake response")
+	// We have to hold the peer lock to read peer.endpoint.
+	peer.RLock()
+	peer.device.log.Debug.Printf("%v - Send handshake response %v", peer, peer.endpoint)
+	peer.RUnlock()
 
 	response, err := peer.device.CreateMessageResponse(peer)
 	if err != nil {
@@ -217,7 +221,7 @@ func (peer *Peer) SendHandshakeResponse() error {
 
 func (device *Device) SendHandshakeCookie(initiatingElem *QueueHandshakeElement) error {
 
-	device.log.Debug.Println("Sending cookie response for denied handshake message for", initiatingElem.endpoint.DstToString())
+	device.log.Debug.Println("Sending cookie response for denied handshake message for", initiatingElem.addr)
 
 	sender := binary.LittleEndian.Uint32(initiatingElem.packet[4:8])
 	reply, err := device.cookieChecker.CreateReply(initiatingElem.packet, sender, initiatingElem.endpoint.DstToBytes())

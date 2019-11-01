@@ -25,6 +25,7 @@ type QueueHandshakeElement struct {
 	msgType  uint32
 	packet   []byte
 	endpoint conn.Endpoint
+	addr     *net.UDPAddr
 	buffer   *[MaxMessageSize]byte
 }
 
@@ -36,6 +37,7 @@ type QueueInboundElement struct {
 	counter  uint64
 	keypair  *Keypair
 	endpoint conn.Endpoint
+	addr     *net.UDPAddr
 }
 
 func (elem *QueueInboundElement) Drop() {
@@ -111,6 +113,7 @@ func (device *Device) RoutineReceiveIncoming(IP int, bind conn.Bind) {
 		err      error
 		size     int
 		endpoint conn.Endpoint
+		addr     *net.UDPAddr
 	)
 
 	for {
@@ -119,9 +122,9 @@ func (device *Device) RoutineReceiveIncoming(IP int, bind conn.Bind) {
 
 		switch IP {
 		case ipv4.Version:
-			size, endpoint, err = bind.ReceiveIPv4(buffer[:])
+			size, endpoint, addr, err = bind.ReceiveIPv4(buffer[:])
 		case ipv6.Version:
-			size, endpoint, err = bind.ReceiveIPv6(buffer[:])
+			size, endpoint, addr, err = bind.ReceiveIPv6(buffer[:])
 		default:
 			panic("invalid IP version")
 		}
@@ -179,6 +182,7 @@ func (device *Device) RoutineReceiveIncoming(IP int, bind conn.Bind) {
 			elem.keypair = keypair
 			elem.dropped = AtomicFalse
 			elem.endpoint = endpoint
+			elem.addr = addr
 			elem.counter = 0
 			elem.Mutex = sync.Mutex{}
 			elem.Lock()
@@ -207,7 +211,7 @@ func (device *Device) RoutineReceiveIncoming(IP int, bind conn.Bind) {
 			okay = len(packet) == MessageCookieReplySize
 
 		default:
-			logDebug.Printf("Received message with unknown type from %v", endpoint.DstIP())
+			logDebug.Printf("Received message with unknown type from %v", addr)
 		}
 
 		if okay {
@@ -218,6 +222,7 @@ func (device *Device) RoutineReceiveIncoming(IP int, bind conn.Bind) {
 					buffer:   buffer,
 					packet:   packet,
 					endpoint: endpoint,
+					addr:     addr,
 				},
 			)) {
 				buffer = device.GetMessageBuffer()
@@ -291,6 +296,16 @@ func (device *Device) RoutineDecryption() {
 	}
 }
 
+func addrToBytes(addr *net.UDPAddr) []byte {
+	out := addr.IP.To4()
+	if out == nil {
+		out = addr.IP
+	}
+	out = append(out, byte(addr.Port&0xff))
+	out = append(out, byte((addr.Port>>8)&0xff))
+	return out
+}
+
 /* Handles incoming packets related to handshake
  */
 func (device *Device) RoutineHandshake() {
@@ -356,7 +371,7 @@ func (device *Device) RoutineHandshake() {
 			// consume reply
 
 			if peer := entry.peer; peer.isRunning.Get() {
-				logDebug.Println("Receiving cookie response from ", elem.endpoint.DstToString())
+				logDebug.Printf("Receiving cookie response from %v", elem.addr)
 				if !peer.cookieGenerator.ConsumeReply(&reply) {
 					logDebug.Println("Could not decrypt invalid cookie response")
 				}
@@ -369,7 +384,7 @@ func (device *Device) RoutineHandshake() {
 			// check mac fields and maybe ratelimit
 
 			if !device.cookieChecker.CheckMAC1(elem.packet) {
-				logDebug.Printf("Received packet with invalid mac1 from %v\n", elem.endpoint.DstIP())
+				logDebug.Printf("Received packet with invalid mac1 from %v", elem.addr)
 				continue
 			}
 
@@ -379,14 +394,14 @@ func (device *Device) RoutineHandshake() {
 
 				// verify MAC2 field
 
-				if !device.cookieChecker.CheckMAC2(elem.packet, elem.endpoint.DstToBytes()) {
+				if !device.cookieChecker.CheckMAC2(elem.packet, addrToBytes(elem.addr)) {
 					device.SendHandshakeCookie(&elem)
 					continue
 				}
 
 				// check ratelimiter
 
-				if !device.rate.limiter.Allow(elem.endpoint.DstIP()) {
+				if !device.rate.limiter.Allow(elem.addr.IP) {
 					continue
 				}
 			}
@@ -415,10 +430,7 @@ func (device *Device) RoutineHandshake() {
 
 			peer := device.ConsumeMessageInitiation(&msg)
 			if peer == nil {
-				logInfo.Println(
-					"Received invalid initiation message from",
-					elem.endpoint.DstToString(),
-				)
+				logInfo.Printf("Received invalid initiation message from %v", elem.addr)
 				continue
 			}
 
@@ -428,9 +440,10 @@ func (device *Device) RoutineHandshake() {
 			peer.timersAnyAuthenticatedPacketReceived()
 
 			// update endpoint
-			peer.SetEndpointFromPacket(elem.endpoint)
+			peer.SetEndpointAddress(elem.addr)
 
-			logDebug.Println(peer, "- Received handshake initiation")
+			logDebug.Printf("%v - Received handshake init from %v\n",
+				peer, elem.addr)
 			atomic.AddUint64(&peer.stats.rxBytes, uint64(len(elem.packet)))
 
 			peer.handshake.mutex.Lock()
@@ -459,17 +472,15 @@ func (device *Device) RoutineHandshake() {
 
 			peer := device.ConsumeMessageResponse(&msg)
 			if peer == nil {
-				logInfo.Println(
-					"Received invalid response message from",
-					elem.endpoint.DstToString(),
-				)
+				logInfo.Printf("Received invalid response message from %v", elem.addr)
 				continue
 			}
 
 			// update endpoint
-			peer.SetEndpointFromPacket(elem.endpoint)
+			peer.SetEndpointAddress(elem.addr)
 
-			logDebug.Println(peer, "- Received handshake response")
+			logDebug.Printf("%v - Received handshake response from %v\n",
+				peer, elem.addr)
 			atomic.AddUint64(&peer.stats.rxBytes, uint64(len(elem.packet)))
 
 			// update timers
@@ -555,7 +566,7 @@ func (peer *Peer) RoutineSequentialReceiver() {
 		}
 
 		// update endpoint
-		peer.SetEndpointFromPacket(elem.endpoint)
+		peer.SetEndpointAddress(elem.addr)
 
 		// check if using new keypair
 		if peer.ReceivedWithKeypair(elem.keypair) {
@@ -574,7 +585,8 @@ func (peer *Peer) RoutineSequentialReceiver() {
 		// check for keepalive
 
 		if len(elem.packet) == 0 {
-			logDebug.Println(peer, "- Receiving keepalive packet")
+			logDebug.Printf("%v - Received keepalive from %v\n",
+				peer, elem.addr)
 			continue
 		}
 		peer.timersDataReceived()
