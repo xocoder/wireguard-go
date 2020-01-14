@@ -47,6 +47,18 @@ type NativeTun struct {
 var WintunPool, _ = wintun.MakePool("WireGuard")
 var WintunStaticRequestedGUID *windows.GUID
 
+func init() {
+	var err error
+	tun.WintunPool, err = wintun.MakePool("Tailscale")
+	if err != nil {
+		panic(err)
+	}
+	tun.WintunStaticRequestedGUID, err = windows.GUIDFromString("{37217669-42da-4657-a55b-0d995d328250}")
+	if err != nil {
+		panic(err)
+	}
+}
+
 //go:linkname procyield runtime.procyield
 func procyield(cycles uint32)
 
