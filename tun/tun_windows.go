@@ -43,11 +43,12 @@ type NativeTun struct {
 	readWait  windows.Handle
 }
 
+const WintunGUID = "{37217669-42da-4657-a55b-0d995d328250}"
 var WintunPool *wintun.Pool
 
 func init() {
 	var err error
-	WintunPool, err = wintun.MakePool("WireGuard")
+	WintunPool, err = wintun.MakePool("Tailscale")
 	if err != nil {
 		panic(fmt.Errorf("Failed to make pool: %w", err))
 	}
@@ -64,7 +65,11 @@ func nanotime() int64
 // interface with the same name exist, it is reused.
 //
 func CreateTUN(ifname string, mtu int) (Device, error) {
-	return CreateTUNWithRequestedGUID(ifname, nil, mtu)
+	guid, err := windows.GUIDFromString(WintunGUID)
+	if err != nil {
+		return nil, err
+	}
+	return CreateTUNWithRequestedGUID(ifname, &guid, mtu)
 }
 
 //
