@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/tailscale/wireguard-go/conn"
+	"github.com/tailscale/wireguard-go/wgcfg"
 )
 
 const (
@@ -76,7 +77,8 @@ type Peer struct {
 	cookieGenerator CookieGenerator
 }
 
-func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
+func (device *Device) NewPeer(pk wgcfg.Key) (*Peer, error) {
+
 	if device.isClosed.Get() {
 		return nil, errors.New("device closed")
 	}
@@ -115,7 +117,7 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 
 	handshake := &peer.handshake
 	handshake.mutex.Lock()
-	handshake.precomputedStaticStatic = device.staticIdentity.privateKey.sharedSecret(pk)
+	handshake.precomputedStaticStatic = device.staticIdentity.privateKey.SharedSecret(pk)
 	handshake.remoteStatic = pk
 	handshake.initiationLimit.Cap = 10
 	handshake.initiationLimit.Fill = HandshakeInitationRate

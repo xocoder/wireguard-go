@@ -51,14 +51,14 @@ type Device struct {
 
 	staticIdentity struct {
 		sync.RWMutex
-		privateKey NoisePrivateKey
-		publicKey  NoisePublicKey
+		privateKey wgcfg.PrivateKey
+		publicKey  wgcfg.Key
 	}
 
 	peers struct {
 		empty        AtomicBool // empty reports whether len(keyMap) == 0
 		sync.RWMutex            // protects keyMap
-		keyMap       map[NoisePublicKey]*Peer
+		keyMap       map[wgcfg.Key]*Peer
 	}
 
 	// unprotected / "self-synchronising resources"
@@ -129,7 +129,7 @@ func newEncryptionQueue() *encryptionQueue {
  *
  * Must hold device.peers.Mutex
  */
-func unsafeRemovePeer(device *Device, peer *Peer, key NoisePublicKey) {
+func unsafeRemovePeer(device *Device, peer *Peer, key wgcfg.Key) {
 
 	// stop routing and processing of packets
 
@@ -245,13 +245,13 @@ func (device *Device) IsUnderLoad() bool {
 	return until.After(now)
 }
 
-func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
+func (device *Device) SetPrivateKey(sk wgcfg.PrivateKey) error {
 	// lock required resources
 
 	device.staticIdentity.Lock()
 	defer device.staticIdentity.Unlock()
 
-	if sk.Equals(device.staticIdentity.privateKey) {
+	if sk.Equal(device.staticIdentity.privateKey) {
 		return nil
 	}
 
@@ -266,9 +266,9 @@ func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
 
 	// remove peers with matching public keys
 
-	publicKey := sk.publicKey()
+	publicKey := sk.Public()
 	for key, peer := range device.peers.keyMap {
-		if peer.handshake.remoteStatic.Equals(publicKey) {
+		if peer.handshake.remoteStatic.Equal(publicKey) {
 			unsafeRemovePeer(device, peer, key)
 		}
 	}
@@ -284,7 +284,7 @@ func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
 	expiredPeers := make([]*Peer, 0, len(device.peers.keyMap))
 	for _, peer := range device.peers.keyMap {
 		handshake := &peer.handshake
-		handshake.precomputedStaticStatic = device.staticIdentity.privateKey.sharedSecret(handshake.remoteStatic)
+		handshake.precomputedStaticStatic = device.staticIdentity.privateKey.SharedSecret(handshake.remoteStatic)
 		expiredPeers = append(expiredPeers, peer)
 	}
 
@@ -359,7 +359,7 @@ func NewDevice(tunDevice tun.Device, opts *DeviceOptions) *Device {
 	}
 	device.tun.mtu = int32(mtu)
 
-	device.peers.keyMap = make(map[NoisePublicKey]*Peer)
+	device.peers.keyMap = make(map[wgcfg.Key]*Peer)
 
 	device.rate.limiter.Init()
 	device.rate.underLoadUntil.Store(time.Time{})
@@ -402,14 +402,14 @@ func NewDevice(tunDevice tun.Device, opts *DeviceOptions) *Device {
 	return device
 }
 
-func (device *Device) LookupPeer(pk NoisePublicKey) *Peer {
+func (device *Device) LookupPeer(pk wgcfg.Key) *Peer {
 	device.peers.RLock()
 	defer device.peers.RUnlock()
 
 	return device.peers.keyMap[pk]
 }
 
-func (device *Device) RemovePeer(key NoisePublicKey) {
+func (device *Device) RemovePeer(key wgcfg.Key) {
 	device.peers.Lock()
 	defer device.peers.Unlock()
 	// stop peer and remove from routing
@@ -428,7 +428,7 @@ func (device *Device) RemoveAllPeers() {
 		unsafeRemovePeer(device, peer, key)
 	}
 
-	device.peers.keyMap = make(map[NoisePublicKey]*Peer)
+	device.peers.keyMap = make(map[wgcfg.Key]*Peer)
 }
 
 func (device *Device) FlushPacketQueues() {
