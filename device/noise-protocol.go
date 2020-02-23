@@ -87,8 +87,8 @@ const (
 type MessageInitiation struct {
 	Type      uint32
 	Sender    uint32
-	Ephemeral NoisePublicKey
-	Static    [NoisePublicKeySize + poly1305.TagSize]byte
+	Ephemeral wgcfg.Key
+	Static    [wgcfg.KeySize + poly1305.TagSize]byte
 	Timestamp [tai64n.TimestampSize + poly1305.TagSize]byte
 	MAC1      [blake2s.Size128]byte
 	MAC2      [blake2s.Size128]byte
@@ -98,7 +98,7 @@ type MessageResponse struct {
 	Type      uint32
 	Sender    uint32
 	Receiver  uint32
-	Ephemeral NoisePublicKey
+	Ephemeral wgcfg.Key
 	Empty     [poly1305.TagSize]byte
 	MAC1      [blake2s.Size128]byte
 	MAC2      [blake2s.Size128]byte
@@ -119,20 +119,21 @@ type MessageCookieReply struct {
 }
 
 type Handshake struct {
-	state                   handshakeState
-	mutex                   sync.RWMutex
-	hash                    [blake2s.Size]byte       // hash value
-	chainKey                [blake2s.Size]byte       // chain key
-	presharedKey            NoiseSymmetricKey        // psk
-	localEphemeral          NoisePrivateKey          // ephemeral secret key
-	localIndex              uint32                   // used to clear hash-table
-	remoteIndex             uint32                   // index for sending
-	remoteStatic            NoisePublicKey           // long term key
-	remoteEphemeral         NoisePublicKey           // ephemeral public key
-	precomputedStaticStatic [NoisePublicKeySize]byte // precomputed shared secret
-	lastTimestamp           tai64n.Timestamp
-	initiationLimit         tokenbucket.TokenBucket
-	lastSentHandshake       time.Time
+	state                     handshakeState
+	mutex                     sync.RWMutex
+	hash                      [blake2s.Size]byte  // hash value
+	chainKey                  [blake2s.Size]byte  // chain key
+	presharedKey              wgcfg.SymmetricKey  // psk
+	localEphemeral            wgcfg.PrivateKey    // ephemeral secret key
+	localIndex                uint32              // used to clear hash-table
+	remoteIndex               uint32              // index for sending
+	remoteStatic              wgcfg.Key           // long term key
+	remoteEphemeral           wgcfg.Key           // ephemeral public key
+	precomputedStaticStatic   [wgcfg.KeySize]byte // precomputed shared secret
+	lastTimestamp             tai64n.Timestamp
+	initiationLimit           tokenbucket.TokenBucket
+	lastInitiationConsumption time.Time
+	lastSentHandshake         time.Time
 }
 
 var (
@@ -191,7 +192,7 @@ func (device *Device) CreateMessageInitiation(peer *Peer) (*MessageInitiation, e
 	var err error
 	handshake.hash = InitialHash
 	handshake.chainKey = InitialChainKey
-	handshake.localEphemeral, err = newPrivateKey()
+	handshake.localEphemeral, err = wgcfg.NewPrivateKey()
 	if err != nil {
 		return nil, err
 	}
@@ -200,14 +201,14 @@ func (device *Device) CreateMessageInitiation(peer *Peer) (*MessageInitiation, e
 
 	msg := MessageInitiation{
 		Type:      MessageInitiationType,
-		Ephemeral: handshake.localEphemeral.publicKey(),
+		Ephemeral: handshake.localEphemeral.Public(),
 	}
 
 	handshake.mixKey(msg.Ephemeral[:])
 	handshake.mixHash(msg.Ephemeral[:])
 
 	// encrypt static key
-	ss := handshake.localEphemeral.sharedSecret(handshake.remoteStatic)
+	ss := handshake.localEphemeral.SharedSecret(handshake.remoteStatic)
 	if isZero(ss[:]) {
 		return nil, errZeroECDHResult
 	}
@@ -269,9 +270,9 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 
 	// decrypt static key
 	var err error
-	var peerPK NoisePublicKey
+	var peerPK wgcfg.Key
 	var key [chacha20poly1305.KeySize]byte
-	ss := device.staticIdentity.privateKey.sharedSecret(msg.Ephemeral)
+	ss := device.staticIdentity.privateKey.SharedSecret(msg.Ephemeral)
 	if isZero(ss[:]) {
 		return nil
 	}
@@ -279,7 +280,6 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 	aead, _ := chacha20poly1305.New(key[:])
 	_, err = aead.Open(peerPK[:0], ZeroNonce[:], msg.Static[:], hash[:])
 	if err != nil {
-		device.log.Debug.Printf("ConsumeMessageInitiation: failed to decrypt static key")
 		return nil
 	}
 	mixHash(&hash, &hash, msg.Static[:])
@@ -387,18 +387,18 @@ func (device *Device) CreateMessageResponse(peer *Peer) (*MessageResponse, error
 
 	// create ephemeral key
 
-	handshake.localEphemeral, err = newPrivateKey()
+	handshake.localEphemeral, err = wgcfg.NewPrivateKey()
 	if err != nil {
 		return nil, err
 	}
-	msg.Ephemeral = handshake.localEphemeral.publicKey()
+	msg.Ephemeral = handshake.localEphemeral.Public()
 	handshake.mixHash(msg.Ephemeral[:])
 	handshake.mixKey(msg.Ephemeral[:])
 
 	func() {
-		ss := handshake.localEphemeral.sharedSecret(handshake.remoteEphemeral)
+		ss := handshake.localEphemeral.SharedSecret(handshake.remoteEphemeral)
 		handshake.mixKey(ss[:])
-		ss = handshake.localEphemeral.sharedSecret(handshake.remoteStatic)
+		ss = handshake.localEphemeral.SharedSecret(handshake.remoteStatic)
 		handshake.mixKey(ss[:])
 	}()
 
@@ -468,13 +468,13 @@ func (device *Device) ConsumeMessageResponse(msg *MessageResponse) *Peer {
 		mixKey(&chainKey, &handshake.chainKey, msg.Ephemeral[:])
 
 		func() {
-			ss := handshake.localEphemeral.sharedSecret(msg.Ephemeral)
+			ss := handshake.localEphemeral.SharedSecret(msg.Ephemeral)
 			mixKey(&chainKey, &chainKey, ss[:])
 			setZero(ss[:])
 		}()
 
 		func() {
-			ss := device.staticIdentity.privateKey.sharedSecret(msg.Ephemeral)
+			ss := device.staticIdentity.privateKey.SharedSecret(msg.Ephemeral)
 			mixKey(&chainKey, &chainKey, ss[:])
 			setZero(ss[:])
 		}()
