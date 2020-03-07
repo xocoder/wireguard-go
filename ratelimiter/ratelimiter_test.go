@@ -7,6 +7,7 @@ package ratelimiter
 
 import (
 	"net"
+	"sync"
 	"testing"
 	"time"
 )
@@ -14,22 +15,13 @@ import (
 type result struct {
 	allowed bool
 	text    string
-	wait    time.Duration
+	wait    int64 // nanoseconds
 }
 
 func TestRatelimiter(t *testing.T) {
-	var rate Ratelimiter
 	var expectedResults []result
-
-	nano := func(nano int64) time.Duration {
-		return time.Nanosecond * time.Duration(nano)
-	}
-
-	add := func(res result) {
-		expectedResults = append(
-			expectedResults,
-			res,
-		)
+	add := func(res ...result) {
+		expectedResults = append(expectedResults, res...)
 	}
 
 	for i := 0; i < packetsBurstable; i++ {
@@ -42,34 +34,30 @@ func TestRatelimiter(t *testing.T) {
 	add(result{
 		allowed: false,
 		text:    "after burst",
-	})
-
-	add(result{
-		allowed: true,
-		wait:    nano(time.Second.Nanoseconds() / packetsPerSecond),
-		text:    "filling tokens for single packet",
-	})
-
-	add(result{
-		allowed: false,
-		text:    "not having refilled enough",
-	})
-
-	add(result{
-		allowed: true,
-		wait:    2 * (nano(time.Second.Nanoseconds() / packetsPerSecond)),
-		text:    "filling tokens for two packet burst",
-	})
-
-	add(result{
-		allowed: true,
-		text:    "second packet in 2 packet burst",
-	})
-
-	add(result{
-		allowed: false,
-		text:    "packet following 2 packet burst",
-	})
+	},
+		result{
+			allowed: true,
+			wait:    packetCost,
+			text:    "filling tokens for single packet",
+		},
+		result{
+			allowed: false,
+			text:    "not having refilled enough",
+		},
+		result{
+			allowed: true,
+			wait:    2 * packetCost,
+			text:    "filling tokens for two packet burst",
+		},
+		result{
+			allowed: true,
+			text:    "second packet in 2 packet burst",
+		},
+		result{
+			allowed: false,
+			text:    "packet following 2 packet burst",
+		},
+	)
 
 	ips := []net.IP{
 		net.ParseIP("127.0.0.1"),
@@ -88,8 +76,16 @@ func TestRatelimiter(t *testing.T) {
 		net.ParseIP("3f0e:54a2:f5b4:cd19:a21d:58e1:3746:84c4"),
 	}
 
-	now := time.Now()
+	var rate Ratelimiter
+	defer rate.Close()
+
+	var (
+		nowMu sync.Mutex
+		now   = time.Now()
+	)
 	rate.timeNow = func() time.Time {
+		nowMu.Lock()
+		defer nowMu.Unlock()
 		return now
 	}
 	defer func() {
@@ -99,16 +95,14 @@ func TestRatelimiter(t *testing.T) {
 
 		rate.timeNow = time.Now
 	}()
-	timeSleep := func(d time.Duration) {
-		now = now.Add(d + 1)
-		rate.cleanup()
+	sleep := func(nanos int64) {
+		nowMu.Lock()
+		now = now.Add(time.Duration(nanos) + 1)
+		nowMu.Unlock()
 	}
 
-	rate.Init()
-	defer rate.Close()
-
 	for i, res := range expectedResults {
-		timeSleep(res.wait)
+		sleep(res.wait)
 		for _, ip := range ips {
 			allowed := rate.Allow(ip)
 			if allowed != res.allowed {
