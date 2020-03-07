@@ -275,7 +275,6 @@ func NewDevice(tunDevice tun.Device, logger *Logger) *Device {
 
 	device.peers.keyMap = make(map[NoisePublicKey]*Peer)
 
-	device.rate.limiter.Init()
 	device.rate.underLoadUntil.Store(time.Time{})
 
 	device.indexTable.Init()
