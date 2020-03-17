@@ -67,7 +67,7 @@ func (device *Device) Reconfig(cfg *wgcfg.Config) (err error) {
 		}
 	}()
 
-	// Remove any currentt peers not in the new configuration.
+	// Remove any current peers not in the new configuration.
 	device.peers.RLock()
 	oldPeers := make(map[wgcfg.Key]bool)
 	for k := range device.peers.keyMap {
@@ -154,6 +154,9 @@ func (device *Device) Reconfig(cfg *wgcfg.Config) (err error) {
 		peer.Unlock()
 
 		device.allowedips.RemoveByPeer(peer)
+		// DANGER: allowedIP is a value type. Its contents (the IP and
+		// Mask) are overwritten on every iteration through the
+		// loop. The loop owns its memory; don't retain references into it.
 		for _, allowedIP := range p.AllowedIPs {
 			ones := uint(allowedIP.Mask)
 			ip := allowedIP.IP.IP()
