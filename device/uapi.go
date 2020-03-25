@@ -333,8 +333,10 @@ func (device *Device) IpcSetOperation(socket *bufio.Reader) error {
 					return &IPCError{ipc.IpcErrorInvalid}
 				}
 
+				peer.Lock()
 				old := peer.persistentKeepaliveInterval
 				peer.persistentKeepaliveInterval = uint16(secs)
+				peer.Unlock()
 
 				// send immediate keepalive if we're turning it on and before it wasn't on
 
