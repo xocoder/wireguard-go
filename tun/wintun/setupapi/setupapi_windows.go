@@ -500,7 +500,7 @@ func CM_Get_Device_Interface_List(deviceID string, interfaceClass *windows.GUID,
 		i = j + 1
 	}
 	if interfaces == nil {
-		return nil, fmt.Errorf("no interfaces found")
+		return nil, fmt.Errorf("no interfaces found; buflen=%v, deviceID=%q, class=%v, flags=0x%x", buflen, deviceID, interfaceClass, flags)
 	}
 	return interfaces, nil
 }
