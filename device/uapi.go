@@ -32,7 +32,17 @@ func (s IPCError) ErrorCode() int64 {
 	return s.int64
 }
 
+// IPCGetFilter are options to control which fields are omitted from Device.IpcGetOperationFiltered.
+type IPCGetFilter struct {
+	// FilterAllowedIPs controls whether AllowedIPs are omitted in the output.
+	FilterAllowedIPs bool
+}
+
 func (device *Device) IpcGetOperation(socket *bufio.Writer) error {
+	return device.IpcGetOperationFiltered(socket, IPCGetFilter{})
+}
+
+func (device *Device) IpcGetOperationFiltered(socket *bufio.Writer, filter IPCGetFilter) error {
 	lines := make([]string, 0, 100)
 	send := func(line string) {
 		lines = append(lines, line)
@@ -88,10 +98,11 @@ func (device *Device) IpcGetOperation(socket *bufio.Writer) error {
 			send(fmt.Sprintf("rx_bytes=%d", atomic.LoadUint64(&peer.stats.rxBytes)))
 			send(fmt.Sprintf("persistent_keepalive_interval=%d", peer.persistentKeepaliveInterval))
 
-			for _, ip := range device.allowedips.EntriesForPeer(peer) {
-				send("allowed_ip=" + ip.String())
+			if !filter.FilterAllowedIPs {
+				for _, ip := range device.allowedips.EntriesForPeer(peer) {
+					send("allowed_ip=" + ip.String())
+				}
 			}
-
 		}
 	}()
 
