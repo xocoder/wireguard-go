@@ -41,6 +41,7 @@ type Peer struct {
 	handshake                   Handshake
 	device                      *Device
 	endpoint                    conn.Endpoint
+	allowedIPs                  []wgcfg.CIDR
 	persistentKeepaliveInterval uint32 // accessed atomically
 
 	disableRoaming bool
