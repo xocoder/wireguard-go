@@ -159,14 +159,15 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 	peer.device.log.Debug.Println(peer, "- Sending handshake initiation")
 	peer.RLock()
 	endpoint := peer.endpoint
+	device := peer.device
 	peer.RUnlock()
 	if endpoint == nil {
 		return errors.New("no peer endpoint; skipped")
 	}
 
-	msg, err := peer.device.CreateMessageInitiation(peer)
+	msg, err := device.CreateMessageInitiation(peer)
 	if err != nil {
-		peer.device.log.Error.Println(peer, "- Failed to create initiation message:", err)
+		device.log.Error.Println(peer, "- Failed to create initiation message:", err)
 		return err
 	}
 
@@ -181,7 +182,7 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 
 	err = peer.SendBuffer(packet)
 	if err != nil {
-		peer.device.log.Error.Println(peer, "- Failed to send handshake initiation:", err)
+		device.log.Error.Println(peer, "- Failed to send handshake initiation:", err)
 	}
 	peer.timersHandshakeInitiated()
 
@@ -194,10 +195,13 @@ func (peer *Peer) SendHandshakeResponse() error {
 	peer.handshake.mutex.Unlock()
 
 	peer.device.log.Debug.Println(peer, "- Sending handshake response")
+	peer.RLock()
+	device := peer.device
+	peer.RUnlock()
 
-	response, err := peer.device.CreateMessageResponse(peer)
+	response, err := device.CreateMessageResponse(peer)
 	if err != nil {
-		peer.device.log.Error.Println(peer, "- Failed to create response message:", err)
+		device.log.Error.Println(peer, "- Failed to create response message:", err)
 		return err
 	}
 
@@ -209,7 +213,7 @@ func (peer *Peer) SendHandshakeResponse() error {
 
 	err = peer.BeginSymmetricSession()
 	if err != nil {
-		peer.device.log.Error.Println(peer, "- Failed to derive keypair:", err)
+		device.log.Error.Println(peer, "- Failed to derive keypair:", err)
 		return err
 	}
 
@@ -219,7 +223,7 @@ func (peer *Peer) SendHandshakeResponse() error {
 
 	err = peer.SendBuffer(packet)
 	if err != nil {
-		peer.device.log.Error.Println(peer, "- Failed to send handshake response:", err)
+		device.log.Error.Println(peer, "- Failed to send handshake response", err)
 	}
 	return err
 }
