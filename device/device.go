@@ -452,6 +452,7 @@ func (device *Device) FlushPacketQueues() {
 		case elem, ok := <-device.queue.decryption:
 			if ok {
 				elem.Drop()
+				elem.Unlock()
 			}
 		case <-device.queue.handshake:
 		default:
