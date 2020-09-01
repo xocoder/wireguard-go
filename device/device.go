@@ -164,11 +164,16 @@ func deviceUpdateState(device *Device) error {
 	case true:
 		if err := device.BindUpdate(); err != nil {
 			device.isUp.Set(false)
+			device.state.Unlock()
 			return fmt.Errorf("unable to update bind: %w\n", err)
 		}
 		device.peers.RLock()
 		for _, peer := range device.peers.keyMap {
-			peer.Start()
+			if err := peer.Start(); err != nil {
+				device.state.Unlock()
+				device.peers.RUnlock()
+				return err
+			}
 			if atomic.LoadUint32(&peer.persistentKeepaliveInterval) > 0 {
 				peer.SendKeepalive()
 			}
