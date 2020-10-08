@@ -23,6 +23,15 @@ const utunControlName = "com.apple.net.utun_control"
 // _CTLIOCGINFO value derived from /usr/include/sys/{kern_control,ioccom}.h
 const _CTLIOCGINFO = (0x40000000 | 0x80000000) | ((100 & 0x1fff) << 16) | uint32(byte('N'))<<8 | 3
 
+// These unix.SYS_* constants were removed from golang.org/x/sys/unix
+// so copy them here for now.
+// See https://github.com/golang/go/issues/41868
+const (
+	sys_IOCTL      = 54
+	sys_CONNECT    = 98
+	sys_GETSOCKOPT = 118
+)
+
 // sockaddr_ctl specifeid in /usr/include/sys/kern_control.h
 type sockaddrCtl struct {
 	scLen      uint8
@@ -138,7 +147,7 @@ func CreateTUN(name string, mtu int) (Device, error) {
 	copy(ctlInfo.ctlName[:], []byte(utunControlName))
 
 	_, _, errno := unix.Syscall(
-		unix.SYS_IOCTL,
+		sys_IOCTL,
 		uintptr(fd),
 		uintptr(_CTLIOCGINFO),
 		uintptr(unsafe.Pointer(ctlInfo)),
@@ -159,7 +168,7 @@ func CreateTUN(name string, mtu int) (Device, error) {
 	scPointer := unsafe.Pointer(&sc)
 
 	_, _, errno = unix.RawSyscall(
-		unix.SYS_CONNECT,
+		sys_CONNECT,
 		uintptr(fd),
 		uintptr(scPointer),
 		uintptr(sockaddrCtlSize),
@@ -238,7 +247,7 @@ func (tun *NativeTun) Name() (string, error) {
 	var errno syscall.Errno
 	tun.operateOnFd(func(fd uintptr) {
 		_, _, errno = unix.Syscall6(
-			unix.SYS_GETSOCKOPT,
+			sys_GETSOCKOPT,
 			fd,
 			2, /* #define SYSPROTO_CONTROL 2 */
 			2, /* #define UTUN_OPT_IFNAME 2 */
@@ -343,7 +352,7 @@ func (tun *NativeTun) setMTU(n int) error {
 	copy(ifr[:], tun.name)
 	*(*uint32)(unsafe.Pointer(&ifr[unix.IFNAMSIZ])) = uint32(n)
 	_, _, errno := unix.Syscall(
-		unix.SYS_IOCTL,
+		sys_IOCTL,
 		uintptr(fd),
 		uintptr(unix.SIOCSIFMTU),
 		uintptr(unsafe.Pointer(&ifr[0])),
@@ -377,7 +386,7 @@ func (tun *NativeTun) MTU() (int, error) {
 	var ifr [64]byte
 	copy(ifr[:], tun.name)
 	_, _, errno := unix.Syscall(
-		unix.SYS_IOCTL,
+		sys_IOCTL,
 		uintptr(fd),
 		uintptr(unix.SIOCGIFMTU),
 		uintptr(unsafe.Pointer(&ifr[0])),
