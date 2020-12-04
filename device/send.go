@@ -97,12 +97,12 @@ func addToOutboundAndEncryptionQueues(outboundQueue chan *QueueOutboundElement, 
 			return
 		default:
 			element.Drop()
-			element.peer.device.PutMessageBuffer(element.buffer)
+			element.peer.device().PutMessageBuffer(element.buffer)
 			element.Unlock()
 		}
 	default:
-		element.peer.device.PutMessageBuffer(element.buffer)
-		element.peer.device.PutOutboundElement(element)
+		element.peer.device().PutMessageBuffer(element.buffer)
+		element.peer.device().PutOutboundElement(element)
 	}
 }
 
@@ -112,15 +112,15 @@ func (peer *Peer) SendKeepalive() bool {
 	if len(peer.queue.nonce) != 0 || peer.queue.packetInNonceQueueIsAwaitingKey.Get() || !peer.isRunning.Get() {
 		return false
 	}
-	elem := peer.device.NewOutboundElement()
+	elem := peer.device().NewOutboundElement()
 	elem.packet = nil
 	select {
 	case peer.queue.nonce <- elem:
-		//peer.device.log.Debug.Println(peer, "- Sending keepalive packet")
+		//peer.device().log.Debug.Println(peer, "- Sending keepalive packet")
 		return true
 	default:
-		peer.device.PutMessageBuffer(elem.buffer)
-		peer.device.PutOutboundElement(elem)
+		peer.device().PutMessageBuffer(elem.buffer)
+		peer.device().PutOutboundElement(elem)
 		return false
 	}
 }
@@ -151,7 +151,7 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 		peer.RUnlock()
 		return errors.New("no peer endpoint; skipped")
 	}
-	device := peer.device
+	device := peer.device()
 	endpointStr := fmt.Sprint(endpoint) // print while holding lock to avoid races
 	peer.RUnlock()
 	device.log.Debug.Printf("%v - %v Send handshake init %v", peer, device, endpointStr)
@@ -187,7 +187,7 @@ func (peer *Peer) SendHandshakeResponse() error {
 
 	// We have to hold the peer lock to read peer.device and peer.endpoint.
 	peer.RLock()
-	device := peer.device
+	device := peer.device()
 	endpointStr := fmt.Sprint(peer.endpoint) // print while holding lock to avoid races
 	peer.RUnlock()
 	device.log.Debug.Printf("%v - Send handshake response %v", peer, endpointStr)
@@ -344,7 +344,7 @@ func (peer *Peer) FlushNonceQueue() {
 }
 
 func (peer *Peer) handshakeDoneCallback() {
-	if peer.device.handshakeDone == nil {
+	if peer.device().handshakeDone == nil {
 		return
 	}
 
@@ -352,7 +352,7 @@ func (peer *Peer) handshakeDoneCallback() {
 	key := peer.handshake.remoteStatic
 	peer.RUnlock()
 
-	peer.device.handshakeDone(key, peer, &peer.device.allowedips)
+	peer.device().handshakeDone(key, peer, &peer.device().allowedips)
 }
 
 /* Queues packets when there is no handshake.
@@ -364,7 +364,7 @@ func (peer *Peer) handshakeDoneCallback() {
 func (peer *Peer) RoutineNonce() {
 	var keypair *Keypair
 
-	device := peer.device
+	device := peer.device()
 	logDebug := device.log.Debug
 
 	flush := func() {
@@ -584,7 +584,7 @@ func (device *Device) RoutineEncryption() {
  */
 func (peer *Peer) RoutineSequentialSender() {
 
-	device := peer.device
+	device := peer.device()
 
 	//logDebug := device.log.Debug
 	logError := device.log.Error

@@ -508,7 +508,7 @@ func (device *Device) RoutineHandshake() {
 
 func (peer *Peer) RoutineSequentialReceiver() {
 
-	device := peer.device
+	device := peer.device()
 	logInfo := device.log.Info
 	logError := device.log.Error
 	logDebug := device.log.Debug
@@ -659,7 +659,7 @@ func (peer *Peer) RoutineSequentialReceiver() {
 		if len(peer.queue.inbound) == 0 {
 			err := device.tun.device.Flush()
 			if err != nil {
-				peer.device.log.Error.Printf("Unable to flush packets: %v", err)
+				peer.device().log.Error.Printf("Unable to flush packets: %v", err)
 			}
 		}
 	}

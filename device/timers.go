@@ -78,9 +78,7 @@ func (peer *Peer) timersActive() bool {
 		return false
 	}
 
-	peer.RLock()
-	device := peer.device
-	peer.RUnlock()
+	device := peer.device()
 	if device == nil || !device.isUp.Get() {
 		return false
 	}
@@ -92,7 +90,7 @@ func (peer *Peer) timersActive() bool {
 
 func expiredRetransmitHandshake(peer *Peer) {
 	if atomic.LoadUint32(&peer.timers.handshakeAttempts) > MaxTimerHandshakes {
-		peer.device.log.Debug.Printf("%s - Handshake did not complete after %d attempts, giving up\n", peer, MaxTimerHandshakes+2)
+		peer.device().log.Debug.Printf("%s - Handshake did not complete after %d attempts, giving up\n", peer, MaxTimerHandshakes+2)
 
 		if peer.timersActive() {
 			peer.timers.sendKeepalive.Del()
@@ -112,7 +110,7 @@ func expiredRetransmitHandshake(peer *Peer) {
 	} else {
 		atomic.AddUint32(&peer.timers.handshakeAttempts, 1)
 		if false {
-			peer.device.log.Debug.Printf("%s - Handshake did not complete after %d seconds, retrying (try %d)\n", peer, int(RekeyTimeout.Seconds()), atomic.LoadUint32(&peer.timers.handshakeAttempts)+1)
+			peer.device().log.Debug.Printf("%s - Handshake did not complete after %d seconds, retrying (try %d)\n", peer, int(RekeyTimeout.Seconds()), atomic.LoadUint32(&peer.timers.handshakeAttempts)+1)
 		}
 
 		/* We clear the endpoint address src address, in case this is the cause of trouble. */
@@ -137,7 +135,7 @@ func expiredSendKeepalive(peer *Peer) {
 }
 
 func expiredNewHandshake(peer *Peer) {
-	peer.device.log.Debug.Printf("%s - Retrying handshake because we stopped hearing back after %d seconds\n", peer, int((KeepaliveTimeout + RekeyTimeout).Seconds()))
+	peer.device().log.Debug.Printf("%s - Retrying handshake because we stopped hearing back after %d seconds\n", peer, int((KeepaliveTimeout + RekeyTimeout).Seconds()))
 	/* We clear the endpoint address src address, in case this is the cause of trouble. */
 	peer.Lock()
 	if peer.endpoint != nil {
@@ -149,7 +147,7 @@ func expiredNewHandshake(peer *Peer) {
 }
 
 func expiredZeroKeyMaterial(peer *Peer) {
-	peer.device.log.Debug.Printf("%s - Removing all keys, since we haven't received a new one in %d seconds\n", peer, int((RejectAfterTime * 3).Seconds()))
+	peer.device().log.Debug.Printf("%s - Removing all keys, since we haven't received a new one in %d seconds\n", peer, int((RejectAfterTime * 3).Seconds()))
 	peer.ZeroAndFlushAll()
 }
 

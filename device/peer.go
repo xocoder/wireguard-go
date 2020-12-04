@@ -39,7 +39,7 @@ type Peer struct {
 	sync.RWMutex
 	keypairs                    Keypairs
 	handshake                   Handshake
-	device                      *Device
+	deviceValue                 atomic.Value // of *Device
 	endpoint                    conn.Endpoint
 	allowedIPs                  []wgcfg.CIDR
 	persistentKeepaliveInterval uint16
@@ -77,6 +77,14 @@ type Peer struct {
 	cookieGenerator CookieGenerator
 }
 
+func (p *Peer) device() *Device {
+	v := p.deviceValue.Load()
+	if v == nil {
+		return nil
+	}
+	return v.(*Device)
+}
+
 func (device *Device) NewPeer(pk wgcfg.Key) (*Peer, error) {
 
 	if device.isClosed.Get() {
@@ -104,7 +112,7 @@ func (device *Device) NewPeer(pk wgcfg.Key) (*Peer, error) {
 	defer peer.Unlock()
 
 	peer.cookieGenerator.Init(pk)
-	peer.device = device
+	peer.deviceValue.Store(device)
 	peer.isRunning.Set(false)
 
 	// map public key
@@ -134,7 +142,7 @@ func (device *Device) NewPeer(pk wgcfg.Key) (*Peer, error) {
 
 	// start peer
 
-	if peer.device.isUp.Get() {
+	if peer.device().isUp.Get() {
 		peer.Start()
 	}
 
@@ -142,10 +150,10 @@ func (device *Device) NewPeer(pk wgcfg.Key) (*Peer, error) {
 }
 
 func (peer *Peer) SendBuffer(buffer []byte) error {
-	peer.device.net.RLock()
-	defer peer.device.net.RUnlock()
+	peer.device().net.RLock()
+	defer peer.device().net.RUnlock()
 
-	if peer.device.net.bind == nil {
+	if peer.device().net.bind == nil {
 		return errors.New("no bind")
 	}
 
@@ -156,7 +164,7 @@ func (peer *Peer) SendBuffer(buffer []byte) error {
 		return errors.New("no known endpoint for peer")
 	}
 
-	err := peer.device.net.bind.Send(buffer, peer.endpoint)
+	err := peer.device().net.bind.Send(buffer, peer.endpoint)
 	if err == nil {
 		atomic.AddUint64(&peer.stats.txBytes, uint64(len(buffer)))
 	}
@@ -170,7 +178,7 @@ func (peer *Peer) String() string {
 func (peer *Peer) Start() error {
 
 	// should never start a peer on a closed device
-	if peer.device.isClosed.Get() {
+	if peer.device().isClosed.Get() {
 		return errors.New("Start called on closed device")
 	}
 
@@ -183,7 +191,7 @@ func (peer *Peer) Start() error {
 		return errors.New("Start called on running device")
 	}
 
-	device := peer.device
+	device := peer.device()
 	device.log.Debug.Println(peer, "- Starting...")
 
 	// reset routine state
@@ -220,7 +228,7 @@ func (peer *Peer) Start() error {
 }
 
 func (peer *Peer) ZeroAndFlushAll() {
-	device := peer.device
+	device := peer.device()
 
 	// clear key pairs
 
@@ -248,7 +256,7 @@ func (peer *Peer) ZeroAndFlushAll() {
 func (peer *Peer) ExpireCurrentKeypairs() {
 	handshake := &peer.handshake
 	handshake.mutex.Lock()
-	peer.device.indexTable.Delete(handshake.localIndex)
+	peer.device().indexTable.Delete(handshake.localIndex)
 	handshake.Clear()
 	handshake.mutex.Unlock()
 	peer.handshake.lastSentHandshake = time.Now().Add(-(RekeyTimeout + time.Second))
@@ -277,7 +285,7 @@ func (peer *Peer) Stop() {
 	peer.routines.Lock()
 	defer peer.routines.Unlock()
 
-	peer.device.log.Debug.Println(peer, "- Stopping...")
+	peer.device().log.Debug.Println(peer, "- Stopping...")
 
 	peer.timersStop()
 
@@ -301,8 +309,8 @@ func (peer *Peer) SetEndpointAddress(addr *net.UDPAddr) {
 	if RoamingDisabled {
 		return
 	}
-	if p := peer.device.allowedips.LookupIP(addr.IP); p != nil {
-		peer.device.log.Debug.Printf("%v - SetEndPointAddress: %v owned by %v, skipping", peer, addr, p)
+	if p := peer.device().allowedips.LookupIP(addr.IP); p != nil {
+		peer.device().log.Debug.Printf("%v - SetEndPointAddress: %v owned by %v, skipping", peer, addr, p)
 		return
 	}
 
@@ -310,7 +318,7 @@ func (peer *Peer) SetEndpointAddress(addr *net.UDPAddr) {
 	if peer.endpoint != nil {
 		err := peer.endpoint.UpdateDst(addr)
 		if err != nil {
-			peer.device.log.Debug.Printf("%v - SetEndpointAddress: %v", peer, err)
+			peer.device().log.Debug.Printf("%v - SetEndpointAddress: %v", peer, err)
 		}
 	}
 	peer.Unlock()

@@ -528,7 +528,7 @@ func (device *Device) ConsumeMessageResponse(msg *MessageResponse) *Peer {
  *
  */
 func (peer *Peer) BeginSymmetricSession() error {
-	device := peer.device
+	device := peer.device()
 	handshake := &peer.handshake
 	handshake.mutex.Lock()
 	defer handshake.mutex.Unlock()
@@ -630,7 +630,7 @@ func (peer *Peer) ReceivedWithKeypair(receivedKeypair *Keypair) bool {
 	}
 	old := keypairs.previous
 	keypairs.previous = keypairs.current
-	peer.device.DeleteKeypair(old)
+	peer.device().DeleteKeypair(old)
 	keypairs.current = keypairs.loadNext()
 	keypairs.storeNext(nil)
 	return true
