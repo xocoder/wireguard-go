@@ -307,7 +307,6 @@ func (peer *Peer) SetEndpointAddress(addr *net.UDPAddr) {
 		return
 	}
 	if p := peer.device.allowedips.LookupIP(addr.IP); p != nil {
-		peer.device.log.Debug.Printf("%v - SetEndPointAddress: %v owned by %v, skipping", peer, addr, p)
 		return
 	}
 
