@@ -20,6 +20,7 @@ import (
 	"github.com/tailscale/wireguard-go/wgcfg"
 	"golang.org/x/net/ipv4"
 	"golang.org/x/net/ipv6"
+	"inet.af/netaddr"
 )
 
 type Device struct {
@@ -67,7 +68,7 @@ type Device struct {
 	indexTable    IndexTable
 	cookieChecker CookieChecker
 
-	unexpectedip func(key *wgcfg.Key, ip wgcfg.IP)
+	unexpectedip func(key *wgcfg.Key, ip netaddr.IP)
 
 	rate struct {
 		underLoadUntil atomic.Value
@@ -310,7 +311,7 @@ type DeviceOptions struct {
 	// UnexpectedIP is called when a packet is received from a
 	// validated peer with an unexpected internal IP address.
 	// The packet is then dropped.
-	UnexpectedIP func(key *wgcfg.Key, ip wgcfg.IP)
+	UnexpectedIP func(key *wgcfg.Key, ip netaddr.IP)
 
 	// HandshakeDone is called every time we complete a peer handshake.
 	HandshakeDone func(peerKey wgcfg.Key, peer *Peer, allowedIPs *AllowedIPs)
@@ -333,7 +334,7 @@ func NewDevice(tunDevice tun.Device, opts *DeviceOptions) *Device {
 		if opts.UnexpectedIP != nil {
 			device.unexpectedip = opts.UnexpectedIP
 		} else {
-			device.unexpectedip = func(key *wgcfg.Key, ip wgcfg.IP) {
+			device.unexpectedip = func(key *wgcfg.Key, ip netaddr.IP) {
 				device.log.Info.Printf("IPv4 packet with disallowed source address %s from %v", ip, key)
 			}
 		}

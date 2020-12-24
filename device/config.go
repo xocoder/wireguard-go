@@ -10,6 +10,7 @@ import (
 
 	"github.com/tailscale/wireguard-go/ipc"
 	"github.com/tailscale/wireguard-go/wgcfg"
+	"inet.af/netaddr"
 )
 
 func (device *Device) Config() *wgcfg.Config {
@@ -40,11 +41,11 @@ func (device *Device) Config() *wgcfg.Config {
 			p.Endpoints = peer.endpoint.Addrs()
 		}
 		for _, ipnet := range device.allowedips.EntriesForPeer(peer) {
-			ones, _ := ipnet.Mask.Size()
-			cidr := wgcfg.CIDR{
-				Mask: uint8(ones),
+			cidr, ok := netaddr.FromStdIPNet(&ipnet)
+			if !ok {
+				device.log.Error.Println("bad ipnet " + ipnet.String())
+				continue
 			}
-			copy(cidr.IP.Addr[:], ipnet.IP.To16())
 			p.AllowedIPs = append(p.AllowedIPs, cidr)
 		}
 		peer.RUnlock()
@@ -153,7 +154,7 @@ func (device *Device) Reconfig(cfg *wgcfg.Config) (err error) {
 		}
 		allowedIPsChanged := !cidrsEqual(peer.allowedIPs, p.AllowedIPs)
 		if allowedIPsChanged {
-			peer.allowedIPs = append([]wgcfg.CIDR(nil), p.AllowedIPs...)
+			peer.allowedIPs = append([]netaddr.IPPrefix(nil), p.AllowedIPs...)
 		}
 		peer.Unlock()
 
@@ -167,8 +168,8 @@ func (device *Device) Reconfig(cfg *wgcfg.Config) (err error) {
 		// Mask) are overwritten on every iteration through the
 		// loop. The loop owns its memory; don't retain references into it.
 		for _, allowedIP := range p.AllowedIPs {
-			ones := uint(allowedIP.Mask)
-			ip := allowedIP.IP.IP()
+			ones := uint(allowedIP.Bits)
+			ip := allowedIP.IP.IPAddr().IP
 			if allowedIP.IP.Is4() {
 				ip = ip.To4()
 			}
@@ -214,7 +215,7 @@ func endpointsEqual(x, y []wgcfg.Endpoint) bool {
 	return true
 }
 
-func cidrsEqual(x, y []wgcfg.CIDR) bool {
+func cidrsEqual(x, y []netaddr.IPPrefix) bool {
 	if len(x) != len(y) {
 		return false
 	}
@@ -231,7 +232,7 @@ func cidrsEqual(x, y []wgcfg.CIDR) bool {
 	}
 
 	// Otherwise, see if they're the same, but out of order.
-	m := make(map[wgcfg.CIDR]bool)
+	m := make(map[netaddr.IPPrefix]bool)
 	for _, v := range x {
 		m[v] = true
 	}
