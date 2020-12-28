@@ -30,3 +30,5 @@ inet.af/netaddr v0.0.0-20201223185330-97d366981fac h1:aqMW8vft7VmOIhtQhsTWhAuZzO
 inet.af/netaddr v0.0.0-20201223185330-97d366981fac/go.mod h1:9NdhtHLglxJliAZB6aC5ws3mfnUArdAzHG/iJq7cB/o=
 inet.af/netaddr v0.0.0-20201224214825-a55841caa437 h1:Li2QBwaT/hU3wE7GdyoqaX+TzIlI+V1zs/CuWrjX8e4=
 inet.af/netaddr v0.0.0-20201224214825-a55841caa437/go.mod h1:9NdhtHLglxJliAZB6aC5ws3mfnUArdAzHG/iJq7cB/o=
+inet.af/netaddr v0.0.0-20201226233944-2d1876c01610 h1:9Nnw3NS9SL4SlFtBWSdv7onMbdY+B8nflRNZvhgxuMY=
+inet.af/netaddr v0.0.0-20201226233944-2d1876c01610/go.mod h1:9NdhtHLglxJliAZB6aC5ws3mfnUArdAzHG/iJq7cB/o=
