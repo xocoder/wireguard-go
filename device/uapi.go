@@ -130,9 +130,7 @@ func (device *Device) IpcSetOperation(r io.Reader) (err error) {
 	for scanner.Scan() {
 		line := scanner.Text()
 		if line == "" {
-			// Blank line ends parsing.
-			// TODO: Should it? Perhaps this should be a continue instead.
-			return nil
+			continue
 		}
 		parts := strings.Split(line, "=")
 		if len(parts) != 2 {
