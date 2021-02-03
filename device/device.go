@@ -125,10 +125,14 @@ func newEncryptionQueue() *encryptionQueue {
  * Must hold device.peers.Mutex
  */
 func unsafeRemovePeer(device *Device, peer *Peer, key NoisePublicKey) {
-	// stop routing of packets
+
+	// stop routing and processing of packets
+
 	device.allowedips.RemoveByPeer(peer)
+	peer.Stop()
 
 	// remove from peer map
+
 	delete(device.peers.keyMap, key)
 	device.peers.empty.Set(len(device.peers.keyMap) == 0)
 }
@@ -226,13 +230,6 @@ func (device *Device) IsUnderLoad() bool {
 }
 
 func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
-	var peersToStop []*Peer
-	defer func() {
-		for _, peer := range peersToStop {
-			peer.Stop()
-		}
-	}()
-
 	// lock required resources
 
 	device.staticIdentity.Lock()
@@ -260,7 +257,6 @@ func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
 	for key, peer := range device.peers.keyMap {
 		if peer.handshake.remoteStatic.Equals(publicKey) {
 			unsafeRemovePeer(device, peer, key)
-			peersToStop = append(peersToStop, peer)
 		}
 	}
 
@@ -388,34 +384,25 @@ func (device *Device) LookupPeer(pk NoisePublicKey) *Peer {
 	return device.peers.keyMap[pk]
 }
 
-// RemovePeer stops the Peer and removes it from routing.
 func (device *Device) RemovePeer(key NoisePublicKey) {
 	device.peers.Lock()
-	peer := device.peers.keyMap[key]
-	if peer != nil {
-		unsafeRemovePeer(device, peer, key)
-	}
-	device.peers.Unlock()
+	defer device.peers.Unlock()
+	// stop peer and remove from routing
 
-	if peer != nil {
-		peer.Stop()
+	peer, ok := device.peers.keyMap[key]
+	if ok {
+		unsafeRemovePeer(device, peer, key)
 	}
 }
 
 func (device *Device) RemoveAllPeers() {
-	var peersToStop []*Peer
-	defer func() {
-		for _, peer := range peersToStop {
-			peer.Stop()
-		}
-	}()
-
 	device.peers.Lock()
 	defer device.peers.Unlock()
+
 	for key, peer := range device.peers.keyMap {
-		peersToStop = append(peersToStop, peer)
 		unsafeRemovePeer(device, peer, key)
 	}
+
 	device.peers.keyMap = make(map[NoisePublicKey]*Peer)
 }
 
