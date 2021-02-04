@@ -20,9 +20,10 @@ import (
 )
 
 type Device struct {
-	isUp           AtomicBool // device is (going) up
-	isClosed       AtomicBool // device is closed? (acting as guard)
-	log            *Logger
+	isUp     AtomicBool // device is (going) up
+	isClosed AtomicBool // device is closed? (acting as guard)
+	log      *Logger
+
 	handshakeDone  func(peerKey NoisePublicKey, peer *Peer, allowedIPs *AllowedIPs)
 	skipBindUpdate bool
 	createBind     func(uport uint16, device *Device) (conn.Bind, uint16, error)
