@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2021 WireGuard LLC. All Rights Reserved.
  */
 
 // Package conn implements WireGuard's network connections.
@@ -29,7 +29,7 @@ type Bind interface {
 	// It reports the number of bytes read, n,
 	// the packet source address ep,
 	// and any error.
-	ReceiveIPv6(buff []byte) (n int, ep Endpoint, err error)
+	ReceiveIPv6(b []byte) (n int, ep Endpoint, err error)
 
 	// ReceiveIPv4 reads an IPv4 UDP packet into b.
 	//

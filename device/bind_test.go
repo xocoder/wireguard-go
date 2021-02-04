@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2021 WireGuard LLC. All Rights Reserved.
  */
 
 package device
@@ -14,14 +14,11 @@ import (
 type DummyDatagram struct {
 	msg      []byte
 	endpoint conn.Endpoint
-	world    bool // better type
 }
 
 type DummyBind struct {
 	in6    chan DummyDatagram
-	ou6    chan DummyDatagram
 	in4    chan DummyDatagram
-	ou4    chan DummyDatagram
 	closed bool
 }
 

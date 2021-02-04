@@ -2,7 +2,7 @@
 
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2021 WireGuard LLC. All Rights Reserved.
  */
 
 package conn
@@ -37,7 +37,7 @@ func CreateEndpoint(s string) (Endpoint, error) {
 	return (*NativeEndpoint)(addr), err
 }
 
-func (_ *NativeEndpoint) ClearSrc() {}
+func (*NativeEndpoint) ClearSrc() {}
 
 func (e *NativeEndpoint) DstIP() net.IP {
 	return (*net.UDPAddr)(e).IP

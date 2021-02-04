@@ -2,7 +2,7 @@
 
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2021 WireGuard LLC. All Rights Reserved.
  */
 
 package main
@@ -55,7 +55,7 @@ func warning() {
 
 func main() {
 	if len(os.Args) == 2 && os.Args[1] == "--version" {
-		fmt.Printf("wireguard-go v%s\n\nUserspace WireGuard daemon for %s-%s.\nInformation available at https://www.wireguard.com.\nCopyright (C) Jason A. Donenfeld <Jason@zx2c4.com>.\n", device.WireGuardGoVersion, runtime.GOOS, runtime.GOARCH)
+		fmt.Printf("wireguard-go v%s\n\nUserspace WireGuard daemon for %s-%s.\nInformation available at https://www.wireguard.com.\nCopyright (C) Jason A. Donenfeld <Jason@zx2c4.com>.\n", Version, runtime.GOOS, runtime.GOARCH)
 		return
 	}
 
@@ -95,16 +95,14 @@ func main() {
 
 	logLevel := func() int {
 		switch os.Getenv("LOG_LEVEL") {
-		case "debug":
-			return device.LogLevelDebug
-		case "info":
-			return device.LogLevelInfo
+		case "verbose", "debug":
+			return device.LogLevelVerbose
 		case "error":
 			return device.LogLevelError
 		case "silent":
 			return device.LogLevelSilent
 		}
-		return device.LogLevelInfo
+		return device.LogLevelError
 	}()
 
 	// open TUN device (or use supplied fd)
@@ -143,12 +141,10 @@ func main() {
 		fmt.Sprintf("(%s) ", interfaceName),
 	)
 
-	logger.Info.Println("Starting wireguard-go version", device.WireGuardGoVersion)
-
-	logger.Debug.Println("Debug log enabled")
+	logger.Verbosef("Starting wireguard-go version %s", Version)
 
 	if err != nil {
-		logger.Error.Println("Failed to create TUN device:", err)
+		logger.Errorf("Failed to create TUN device: %v", err)
 		os.Exit(ExitSetupFailed)
 	}
 
@@ -171,7 +167,7 @@ func main() {
 	}()
 
 	if err != nil {
-		logger.Error.Println("UAPI listen error:", err)
+		logger.Errorf("UAPI listen error: %v", err)
 		os.Exit(ExitSetupFailed)
 		return
 	}
@@ -206,7 +202,7 @@ func main() {
 
 		path, err := os.Executable()
 		if err != nil {
-			logger.Error.Println("Failed to determine executable:", err)
+			logger.Errorf("Failed to determine executable: %v", err)
 			os.Exit(ExitSetupFailed)
 		}
 
@@ -216,7 +212,7 @@ func main() {
 			attr,
 		)
 		if err != nil {
-			logger.Error.Println("Failed to daemonize:", err)
+			logger.Errorf("Failed to daemonize: %v", err)
 			os.Exit(ExitSetupFailed)
 		}
 		process.Release()
@@ -227,14 +223,14 @@ func main() {
 		Logger: logger,
 	})
 
-	logger.Info.Println("Device started")
+	logger.Verbosef("Device started")
 
 	errs := make(chan error)
 	term := make(chan os.Signal, 1)
 
 	uapi, err := ipc.UAPIListen(interfaceName, fileUAPI)
 	if err != nil {
-		logger.Error.Println("Failed to listen on uapi socket:", err)
+		logger.Errorf("Failed to listen on uapi socket: %v", err)
 		os.Exit(ExitSetupFailed)
 	}
 
@@ -249,7 +245,7 @@ func main() {
 		}
 	}()
 
-	logger.Info.Println("UAPI listener started")
+	logger.Verbosef("UAPI listener started")
 
 	// wait for program to terminate
 
@@ -267,5 +263,5 @@ func main() {
 	uapi.Close()
 	device.Close()
 
-	logger.Info.Println("Shutting down")
+	logger.Verbosef("Shutting down")
 }

@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2021 WireGuard LLC. All Rights Reserved.
  */
 
 package device
@@ -65,51 +65,83 @@ type Device struct {
 	cookieChecker CookieChecker
 
 	rate struct {
-		underLoadUntil atomic.Value
+		underLoadUntil int64
 		limiter        ratelimiter.Ratelimiter
 	}
 
 	pool struct {
-		messageBufferPool        *sync.Pool
-		messageBufferReuseChan   chan *[MaxMessageSize]byte
-		inboundElementPool       *sync.Pool
-		inboundElementReuseChan  chan *QueueInboundElement
-		outboundElementPool      *sync.Pool
-		outboundElementReuseChan chan *QueueOutboundElement
+		messageBuffers   *WaitPool
+		inboundElements  *WaitPool
+		outboundElements *WaitPool
 	}
 
 	queue struct {
-		encryption *encryptionQueue
-		decryption chan *QueueInboundElement
-		handshake  chan QueueHandshakeElement
-	}
-
-	signals struct {
-		stop chan struct{}
+		encryption *outboundQueue
+		decryption *inboundQueue
+		handshake  *handshakeQueue
 	}
 
 	tun struct {
 		device tun.Device
 		mtu    int32
 	}
+
+	ipcMutex sync.RWMutex
+	closed   chan struct{}
 }
 
-// An encryptionQueue is a channel of QueueOutboundElements awaiting encryption.
-// An encryptionQueue is ref-counted using its wg field.
-// An encryptionQueue created with newEncryptionQueue has one reference.
+// An outboundQueue is a channel of QueueOutboundElements awaiting encryption.
+// An outboundQueue is ref-counted using its wg field.
+// An outboundQueue created with newOutboundQueue has one reference.
 // Every additional writer must call wg.Add(1).
 // Every completed writer must call wg.Done().
 // When no further writers will be added,
 // call wg.Done to remove the initial reference.
 // When the refcount hits 0, the queue's channel is closed.
-type encryptionQueue struct {
+type outboundQueue struct {
 	c  chan *QueueOutboundElement
 	wg sync.WaitGroup
 }
 
-func newEncryptionQueue() *encryptionQueue {
-	q := &encryptionQueue{
+func newOutboundQueue() *outboundQueue {
+	q := &outboundQueue{
 		c: make(chan *QueueOutboundElement, QueueOutboundSize),
+	}
+	q.wg.Add(1)
+	go func() {
+		q.wg.Wait()
+		close(q.c)
+	}()
+	return q
+}
+
+// A inboundQueue is similar to an outboundQueue; see those docs.
+type inboundQueue struct {
+	c  chan *QueueInboundElement
+	wg sync.WaitGroup
+}
+
+func newInboundQueue() *inboundQueue {
+	q := &inboundQueue{
+		c: make(chan *QueueInboundElement, QueueInboundSize),
+	}
+	q.wg.Add(1)
+	go func() {
+		q.wg.Wait()
+		close(q.c)
+	}()
+	return q
+}
+
+// A handshakeQueue is similar to an outboundQueue; see those docs.
+type handshakeQueue struct {
+	c  chan QueueHandshakeElement
+	wg sync.WaitGroup
+}
+
+func newHandshakeQueue() *handshakeQueue {
+	q := &handshakeQueue{
+		c: make(chan QueueHandshakeElement, QueueHandshakeSize),
 	}
 	q.wg.Add(1)
 	go func() {
@@ -162,7 +194,7 @@ func deviceUpdateState(device *Device) {
 	switch newIsUp {
 	case true:
 		if err := device.BindUpdate(); err != nil {
-			device.log.Error.Println("Unable to update bind:", err)
+			device.log.Errorf("Unable to update bind: %v", err)
 			device.isUp.Set(false)
 			break
 		}
@@ -213,20 +245,15 @@ func (device *Device) Down() {
 }
 
 func (device *Device) IsUnderLoad() bool {
-
 	// check if currently under load
-
 	now := time.Now()
-	underLoad := len(device.queue.handshake) >= UnderLoadQueueSize
+	underLoad := len(device.queue.handshake.c) >= UnderLoadQueueSize
 	if underLoad {
-		device.rate.underLoadUntil.Store(now.Add(UnderLoadAfterTime))
+		atomic.StoreInt64(&device.rate.underLoadUntil, now.Add(UnderLoadAfterTime).UnixNano())
 		return true
 	}
-
 	// check if recently under load
-
-	until := device.rate.underLoadUntil.Load().(time.Time)
-	return until.After(now)
+	return atomic.LoadInt64(&device.rate.underLoadUntil) > now.UnixNano()
 }
 
 func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
@@ -256,7 +283,9 @@ func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
 
 	for key, peer := range device.peers.keyMap {
 		if peer.handshake.remoteStatic.Equals(publicKey) {
+			peer.handshake.mutex.RUnlock()
 			unsafeRemovePeer(device, peer, key)
+			peer.handshake.mutex.RLock()
 		}
 	}
 
@@ -298,6 +327,7 @@ type DeviceOptions struct {
 
 func NewDevice(tunDevice tun.Device, opts *DeviceOptions) *Device {
 	device := new(Device)
+	device.closed = make(chan struct{})
 
 	device.isUp.Set(false)
 	device.isClosed.Set(false)
@@ -329,30 +359,20 @@ func NewDevice(tunDevice tun.Device, opts *DeviceOptions) *Device {
 	device.tun.device = tunDevice
 	mtu, err := device.tun.device.MTU()
 	if err != nil {
-		device.log.Error.Println("Trouble determining MTU, assuming default:", err)
+		device.log.Errorf("Trouble determining MTU, assuming default: %v", err)
 		mtu = DefaultMTU
 	}
 	device.tun.mtu = int32(mtu)
-
 	device.peers.keyMap = make(map[NoisePublicKey]*Peer)
-
 	device.rate.limiter.Init()
-	device.rate.underLoadUntil.Store(time.Time{})
-
 	device.indexTable.Init()
-	device.allowedips.Reset()
-
 	device.PopulatePools()
 
 	// create queues
 
-	device.queue.handshake = make(chan QueueHandshakeElement, QueueHandshakeSize)
-	device.queue.encryption = newEncryptionQueue()
-	device.queue.decryption = make(chan *QueueInboundElement, QueueInboundSize)
-
-	// prepare signals
-
-	device.signals.stop = make(chan struct{})
+	device.queue.handshake = newHandshakeQueue()
+	device.queue.encryption = newOutboundQueue()
+	device.queue.decryption = newInboundQueue()
 
 	// prepare net
 
@@ -406,28 +426,12 @@ func (device *Device) RemoveAllPeers() {
 	device.peers.keyMap = make(map[NoisePublicKey]*Peer)
 }
 
-func (device *Device) FlushPacketQueues() {
-	for {
-		select {
-		case elem, ok := <-device.queue.decryption:
-			if ok {
-				elem.Drop()
-				elem.Unlock()
-			}
-		case <-device.queue.handshake:
-		default:
-			return
-		}
-	}
-
-}
-
 func (device *Device) Close() {
 	if device.isClosed.Swap(true) {
 		return
 	}
 
-	device.log.Info.Println("Device closing")
+	device.log.Verbosef("Device closing")
 	device.state.changing.Set(true)
 	device.state.Lock()
 	defer device.state.Unlock()
@@ -437,25 +441,27 @@ func (device *Device) Close() {
 
 	device.isUp.Set(false)
 
-	// We kept a reference to the encryption queue,
-	// in case we started any new peers that might write to it.
-	// No new peers are coming; we are done with the encryption queue.
-	device.queue.encryption.wg.Done()
-	close(device.signals.stop)
-	device.state.stopping.Wait()
-
+	// Remove peers before closing queues,
+	// because peers assume that queues are active.
 	device.RemoveAllPeers()
 
-	device.FlushPacketQueues()
+	// We kept a reference to the encryption and decryption queues,
+	// in case we started any new peers that might write to them.
+	// No new peers are coming; we are done with these queues.
+	device.queue.encryption.wg.Done()
+	device.queue.decryption.wg.Done()
+	device.queue.handshake.wg.Done()
+	device.state.stopping.Wait()
 
 	device.rate.limiter.Close()
 
 	device.state.changing.Set(false)
-	device.log.Info.Println("Interface closed")
+	device.log.Verbosef("Interface closed")
+	close(device.closed)
 }
 
 func (device *Device) Wait() chan struct{} {
-	return device.signals.stop
+	return device.closed
 }
 
 func (device *Device) SendKeepalivesToPeersWithCurrentKeypair() {
@@ -536,7 +542,7 @@ func (device *Device) BindUpdate() error {
 	defer device.net.Unlock()
 
 	if device.skipBindUpdate && device.net.bind != nil {
-		device.log.Debug.Println("UDP bind update skipped")
+		device.log.Verbosef("UDP bind update skipped")
 		return nil
 	}
 
@@ -592,10 +598,12 @@ func (device *Device) BindUpdate() error {
 		// start receiving routines
 
 		device.net.stopping.Add(2)
+		device.queue.decryption.wg.Add(2) // each RoutineReceiveIncoming goroutine writes to device.queue.decryption
+		device.queue.handshake.wg.Add(2)  // each RoutineReceiveIncoming goroutine writes to device.queue.handshake
 		go device.RoutineReceiveIncoming(ipv4.Version, netc.bind)
 		go device.RoutineReceiveIncoming(ipv6.Version, netc.bind)
 
-		device.log.Debug.Println("UDP bind has been updated")
+		device.log.Verbosef("UDP bind has been updated")
 	}
 
 	return nil

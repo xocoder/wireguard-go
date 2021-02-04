@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2021 WireGuard LLC. All Rights Reserved.
  */
 
 package device
@@ -8,7 +8,6 @@ package device
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -44,7 +43,6 @@ import (
  */
 
 type QueueOutboundElement struct {
-	dropped int32
 	sync.Mutex
 	buffer  *[MaxMessageSize]byte // slice holding the packet data
 	packet  []byte                // slice of "buffer" (always!)
@@ -55,7 +53,6 @@ type QueueOutboundElement struct {
 
 func (device *Device) NewOutboundElement() *QueueOutboundElement {
 	elem := device.GetOutboundElement()
-	elem.dropped = AtomicFalse
 	elem.buffer = device.GetMessageBuffer()
 	elem.Mutex = sync.Mutex{}
 	elem.nonce = 0
@@ -74,66 +71,21 @@ func (elem *QueueOutboundElement) clearPointers() {
 	elem.peer = nil
 }
 
-func (elem *QueueOutboundElement) Drop() {
-	atomic.StoreInt32(&elem.dropped, AtomicTrue)
-}
-
-func (elem *QueueOutboundElement) IsDropped() bool {
-	return atomic.LoadInt32(&elem.dropped) == AtomicTrue
-}
-
-func addToNonceQueue(queue chan *QueueOutboundElement, elem *QueueOutboundElement, device *Device) {
-	for {
-		select {
-		case queue <- elem:
-			return
-		default:
-			select {
-			case old := <-queue:
-				device.PutMessageBuffer(old.buffer)
-				device.PutOutboundElement(old)
-			default:
-			}
-		}
-	}
-}
-
-func addToOutboundAndEncryptionQueues(outboundQueue chan *QueueOutboundElement, encryptionQueue chan *QueueOutboundElement, elem *QueueOutboundElement) {
-	select {
-	case outboundQueue <- elem:
-		select {
-		case encryptionQueue <- elem:
-			return
-		default:
-			elem.Drop()
-			elem.peer.device.PutMessageBuffer(elem.buffer)
-			elem.Unlock()
-		}
-	default:
-		elem.peer.device.PutMessageBuffer(elem.buffer)
-		elem.peer.device.PutOutboundElement(elem)
-	}
-}
-
 /* Queues a keepalive if no packets are queued for peer
  */
-func (peer *Peer) SendKeepalive() bool {
-	peer.queue.RLock()
-	defer peer.queue.RUnlock()
-	if len(peer.queue.nonce) != 0 || peer.queue.packetInNonceQueueIsAwaitingKey.Get() || !peer.isRunning.Get() {
-		return false
+func (peer *Peer) SendKeepalive() {
+	if len(peer.queue.staged) == 0 && peer.isRunning.Get() {
+		elem := peer.device.NewOutboundElement()
+		elem.packet = nil
+		select {
+		case peer.queue.staged <- elem:
+			peer.device.log.Verbosef("%v - Sending keepalive packet", peer)
+		default:
+			peer.device.PutMessageBuffer(elem.buffer)
+			peer.device.PutOutboundElement(elem)
+		}
 	}
-	elem := peer.device.NewOutboundElement()
-	elem.packet = nil
-	select {
-	case peer.queue.nonce <- elem:
-		peer.device.log.Debug.Println(peer, "- Sending keepalive packet")
-		return true
-	default:
-		peer.device.PutMessageBuffer(elem.buffer)
-		peer.device.PutOutboundElement(elem)
-		return false
-	}
+	peer.SendStagedPackets()
 }
 
 func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
@@ -156,18 +108,11 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 	peer.handshake.lastSentHandshake = time.Now()
 	peer.handshake.mutex.Unlock()
 
-	peer.device.log.Debug.Println(peer, "- Sending handshake initiation")
-	peer.RLock()
-	endpoint := peer.endpoint
-	device := peer.device
-	peer.RUnlock()
-	if endpoint == nil {
-		return errors.New("no peer endpoint; skipped")
-	}
+	peer.device.log.Verbosef("%v - Sending handshake initiation", peer)
 
-	msg, err := device.CreateMessageInitiation(peer)
+	msg, err := peer.device.CreateMessageInitiation(peer)
 	if err != nil {
-		device.log.Error.Println(peer, "- Failed to create initiation message:", err)
+		peer.device.log.Errorf("%v - Failed to create initiation message: %v", peer, err)
 		return err
 	}
 
@@ -182,7 +127,7 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 
 	err = peer.SendBuffer(packet)
 	if err != nil {
-		device.log.Error.Println(peer, "- Failed to send handshake initiation:", err)
+		peer.device.log.Errorf("%v - Failed to send handshake initiation: %v", peer, err)
 	}
 	peer.timersHandshakeInitiated()
 
@@ -194,14 +139,11 @@ func (peer *Peer) SendHandshakeResponse() error {
 	peer.handshake.lastSentHandshake = time.Now()
 	peer.handshake.mutex.Unlock()
 
-	peer.device.log.Debug.Println(peer, "- Sending handshake response")
-	peer.RLock()
-	device := peer.device
-	peer.RUnlock()
+	peer.device.log.Verbosef("%v - Sending handshake response", peer)
 
-	response, err := device.CreateMessageResponse(peer)
+	response, err := peer.device.CreateMessageResponse(peer)
 	if err != nil {
-		device.log.Error.Println(peer, "- Failed to create response message:", err)
+		peer.device.log.Errorf("%v - Failed to create response message: %v", peer, err)
 		return err
 	}
 
@@ -213,7 +155,7 @@ func (peer *Peer) SendHandshakeResponse() error {
 
 	err = peer.BeginSymmetricSession()
 	if err != nil {
-		device.log.Error.Println(peer, "- Failed to derive keypair:", err)
+		peer.device.log.Errorf("%v - Failed to derive keypair: %v", peer, err)
 		return err
 	}
 
@@ -223,19 +165,18 @@ func (peer *Peer) SendHandshakeResponse() error {
 
 	err = peer.SendBuffer(packet)
 	if err != nil {
-		device.log.Error.Println(peer, "- Failed to send handshake response", err)
+		peer.device.log.Errorf("%v - Failed to send handshake response: %v", peer, err)
 	}
 	return err
 }
 
 func (device *Device) SendHandshakeCookie(initiatingElem *QueueHandshakeElement) error {
-
-	device.log.Debug.Println("Sending cookie response for denied handshake message for", initiatingElem.endpoint.DstToString())
+	device.log.Verbosef("Sending cookie response for denied handshake message for %v", initiatingElem.endpoint.DstToString())
 
 	sender := binary.LittleEndian.Uint32(initiatingElem.packet[4:8])
 	reply, err := device.cookieChecker.CreateReply(initiatingElem.packet, sender, initiatingElem.endpoint.DstToBytes())
 	if err != nil {
-		device.log.Error.Println("Failed to create cookie reply:", err)
+		device.log.Errorf("Failed to create cookie reply: %v", err)
 		return err
 	}
 
@@ -258,21 +199,17 @@ func (peer *Peer) keepKeyFreshSending() {
 }
 
 /* Reads packets from the TUN and inserts
- * into nonce queue for peer
+ * into staged queue for peer
  *
  * Obs. Single instance per TUN device
  */
 func (device *Device) RoutineReadFromTUN() {
-
-	logDebug := device.log.Debug
-	logError := device.log.Error
-
 	defer func() {
-		logDebug.Println("Routine: TUN reader - stopped")
+		device.log.Verbosef("Routine: TUN reader - stopped")
 		device.state.stopping.Done()
 	}()
 
-	logDebug.Println("Routine: TUN reader - started")
+	device.log.Verbosef("Routine: TUN reader - started")
 
 	var elem *QueueOutboundElement
 
@@ -290,7 +227,7 @@ func (device *Device) RoutineReadFromTUN() {
 
 		if err != nil {
 			if !device.isClosed.Get() {
-				logError.Println("Failed to read packet from TUN device:", err)
+				device.log.Errorf("Failed to read packet from TUN device: %v", err)
 				device.Close()
 			}
 			device.PutMessageBuffer(elem.buffer)
@@ -323,165 +260,86 @@ func (device *Device) RoutineReadFromTUN() {
 			peer = device.allowedips.LookupIPv6(dst)
 
 		default:
-			logDebug.Println("Received packet with unknown IP version")
+			device.log.Verbosef("Received packet with unknown IP version")
 		}
 
 		if peer == nil {
 			continue
 		}
-
-		// insert into nonce/pre-handshake queue
-
-		peer.queue.RLock()
 		if peer.isRunning.Get() {
-			if peer.queue.packetInNonceQueueIsAwaitingKey.Get() {
-				peer.SendHandshakeInitiation(false)
-			}
-			addToNonceQueue(peer.queue.nonce, elem, device)
+			peer.StagePacket(elem)
 			elem = nil
+			peer.SendStagedPackets()
 		}
-		peer.queue.RUnlock()
 	}
 }
 
-func (peer *Peer) FlushNonceQueue() {
-	select {
-	case peer.signals.flushNonceQueue <- struct{}{}:
-	default:
+func (peer *Peer) StagePacket(elem *QueueOutboundElement) {
+	for {
+		select {
+		case peer.queue.staged <- elem:
+			return
+		default:
+		}
+		select {
+		case tooOld := <-peer.queue.staged:
+			peer.device.PutMessageBuffer(tooOld.buffer)
+			peer.device.PutOutboundElement(tooOld)
+		default:
+		}
 	}
 }
 
-func (peer *Peer) handshakeDoneCallback() {
-	if peer.device.handshakeDone == nil {
+func (peer *Peer) SendStagedPackets() {
+top:
+	if len(peer.queue.staged) == 0 || !peer.device.isUp.Get() {
 		return
 	}
 
-	peer.RLock()
-	key := peer.handshake.remoteStatic
-	peer.RUnlock()
-
-	peer.device.handshakeDone(key, peer, &peer.device.allowedips)
-}
-
-/* Queues packets when there is no handshake.
- * Then assigns nonces to packets sequentially
- * and creates "work" structs for workers
- *
- * Obs. A single instance per peer
- */
-func (peer *Peer) RoutineNonce() {
-	var keypair *Keypair
-
-	device := peer.device
-	logDebug := device.log.Debug
-
-	flush := func() {
-		for {
-			select {
-			case elem := <-peer.queue.nonce:
-				device.PutMessageBuffer(elem.buffer)
-				device.PutOutboundElement(elem)
-			default:
-				return
-			}
-		}
+	keypair := peer.keypairs.Current()
+	if keypair == nil || atomic.LoadUint64(&keypair.sendNonce) >= RejectAfterMessages || time.Since(keypair.created) >= RejectAfterTime {
+		peer.SendHandshakeInitiation(false)
+		return
 	}
 
-	defer func() {
-		flush()
-		logDebug.Println(peer, "- Routine: nonce worker - stopped")
-		peer.queue.packetInNonceQueueIsAwaitingKey.Set(false)
-		device.queue.encryption.wg.Done() // no more writes from us
-		close(peer.queue.outbound)        // no more writes to this channel
-		peer.routines.stopping.Done()
-	}()
-
-	logDebug.Println(peer, "- Routine: nonce worker - started")
-
-NextPacket:
 	for {
-		peer.queue.packetInNonceQueueIsAwaitingKey.Set(false)
-
 		select {
-		case <-peer.routines.stop:
-			return
-
-		case <-peer.signals.flushNonceQueue:
-			flush()
-			continue NextPacket
-
-		case elem, ok := <-peer.queue.nonce:
-
-			if !ok {
-				return
-			}
-
-			// make sure to always pick the newest key
-
-			for {
-
-				// check validity of newest key pair
-
-				keypair = peer.keypairs.Current()
-				if keypair != nil && atomic.LoadUint64(&keypair.sendNonce) < RejectAfterMessages {
-					if time.Since(keypair.created) < RejectAfterTime {
-						break
-					}
-				}
-				peer.queue.packetInNonceQueueIsAwaitingKey.Set(true)
-
-				// no suitable key pair, request for new handshake
-
-				select {
-				case <-peer.signals.newKeypairArrived:
-				default:
-				}
-
-				peer.SendHandshakeInitiation(false)
-
-				// wait for key to be established
-
-				logDebug.Println(peer, "- Awaiting keypair")
-
-				select {
-				case <-peer.signals.newKeypairArrived:
-					logDebug.Println(peer, "- Obtained awaited keypair")
-					peer.handshakeDoneCallback()
-
-				case <-peer.signals.flushNonceQueue:
-					device.PutMessageBuffer(elem.buffer)
-					device.PutOutboundElement(elem)
-					flush()
-					continue NextPacket
-
-				case <-peer.routines.stop:
-					device.PutMessageBuffer(elem.buffer)
-					device.PutOutboundElement(elem)
-					return
-				}
-			}
-			peer.queue.packetInNonceQueueIsAwaitingKey.Set(false)
-
-			// populate work element
-
+		case elem := <-peer.queue.staged:
 			elem.peer = peer
 			elem.nonce = atomic.AddUint64(&keypair.sendNonce, 1) - 1
-
-			// double check in case of race condition added by future code
-
 			if elem.nonce >= RejectAfterMessages {
 				atomic.StoreUint64(&keypair.sendNonce, RejectAfterMessages)
-				device.PutMessageBuffer(elem.buffer)
-				device.PutOutboundElement(elem)
-				continue NextPacket
+				peer.StagePacket(elem) // XXX: Out of order, but we can't front-load go chans
+				goto top
 			}
 
 			elem.keypair = keypair
-			elem.dropped = AtomicFalse
 			elem.Lock()
 
 			// add to parallel and sequential queue
-			addToOutboundAndEncryptionQueues(peer.queue.outbound, device.queue.encryption.c, elem)
+			peer.queue.RLock()
+			if peer.isRunning.Get() {
+				peer.queue.outbound <- elem
+				peer.device.queue.encryption.c <- elem
+			} else {
+				peer.device.PutMessageBuffer(elem.buffer)
+				peer.device.PutOutboundElement(elem)
+			}
+			peer.queue.RUnlock()
+		default:
+			return
+		}
+	}
+}
+
+func (peer *Peer) FlushStagedPackets() {
+	for {
+		select {
+		case elem := <-peer.queue.staged:
+			peer.device.PutMessageBuffer(elem.buffer)
+			peer.device.PutOutboundElement(elem)
+		default:
+			return
 		}
 	}
 }
@@ -507,24 +365,14 @@ func calculatePaddingSize(packetSize, mtu int) int {
  * Obs. One instance per core
  */
 func (device *Device) RoutineEncryption() {
-
+	var paddingZeros [PaddingMultiple]byte
 	var nonce [chacha20poly1305.NonceSize]byte
 
-	logDebug := device.log.Debug
-
-	defer logDebug.Println("Routine: encryption worker - stopped")
-	logDebug.Println("Routine: encryption worker - started")
+	defer device.log.Verbosef("Routine: encryption worker - stopped")
+	device.log.Verbosef("Routine: encryption worker - started")
 
 	for elem := range device.queue.encryption.c {
-
-		// check if dropped
-
-		if elem.IsDropped() {
-			continue
-		}
-
 		// populate header fields
-
 		header := elem.buffer[:MessageTransportHeaderSize]
 
 		fieldType := header[0:4]
@@ -536,11 +384,8 @@ func (device *Device) RoutineEncryption() {
 		binary.LittleEndian.PutUint64(fieldNonce, elem.nonce)
 
 		// pad content to multiple of 16
-
 		paddingSize := calculatePaddingSize(len(elem.packet), int(atomic.LoadInt32(&device.tun.mtu)))
-		for i := 0; i < paddingSize; i++ {
-			elem.packet = append(elem.packet, 0)
-		}
+		elem.packet = append(elem.packet, paddingZeros[:paddingSize]...)
 
 		// encrypt content and release to consumer
 
@@ -561,21 +406,15 @@ func (device *Device) RoutineEncryption() {
  * The routine terminates then the outbound queue is closed.
  */
 func (peer *Peer) RoutineSequentialSender() {
-
 	device := peer.device
-
-	logDebug := device.log.Debug
-	logError := device.log.Error
-
-	defer logDebug.Println(peer, "- Routine: sequential sender - stopped")
-	logDebug.Println(peer, "- Routine: sequential sender - started")
+	defer func() {
+		defer device.log.Verbosef("%v - Routine: sequential sender - stopped", peer)
+		peer.stopping.Done()
+	}()
+	device.log.Verbosef("%v - Routine: sequential sender - started", peer)
 
 	for elem := range peer.queue.outbound {
 		elem.Lock()
-		if elem.IsDropped() {
-			device.PutOutboundElement(elem)
-			continue
-		}
 		if !peer.isRunning.Get() {
 			// peer has been stopped; return re-usable elems to the shared pool.
 			// This is an optimization only. It is possible for the peer to be stopped
@@ -600,7 +439,7 @@ func (peer *Peer) RoutineSequentialSender() {
 		device.PutMessageBuffer(elem.buffer)
 		device.PutOutboundElement(elem)
 		if err != nil {
-			logError.Println(peer, "- Failed to send data packet", err)
+			device.log.Errorf("%v - Failed to send data packet: %v", peer, err)
 			continue
 		}
 

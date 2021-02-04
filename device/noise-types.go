@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2021 WireGuard LLC. All Rights Reserved.
  */
 
 package device
@@ -9,19 +9,18 @@ import (
 	"crypto/subtle"
 	"encoding/hex"
 	"errors"
-
-	"golang.org/x/crypto/chacha20poly1305"
 )
 
 const (
-	NoisePublicKeySize  = 32
-	NoisePrivateKeySize = 32
+	NoisePublicKeySize    = 32
+	NoisePrivateKeySize   = 32
+	NoisePresharedKeySize = 32
 )
 
 type (
 	NoisePublicKey    [NoisePublicKeySize]byte
 	NoisePrivateKey   [NoisePrivateKeySize]byte
-	NoiseSymmetricKey [chacha20poly1305.KeySize]byte
+	NoisePresharedKey [NoisePresharedKeySize]byte
 	NoiseNonce        uint64 // padded to 12-bytes
 )
 
@@ -61,16 +60,8 @@ func (key *NoisePrivateKey) FromMaybeZeroHex(src string) (err error) {
 	return
 }
 
-func (key NoisePrivateKey) ToHex() string {
-	return hex.EncodeToString(key[:])
-}
-
 func (key *NoisePublicKey) FromHex(src string) error {
 	return loadExactHex(key[:], src)
-}
-
-func (key NoisePublicKey) ToHex() string {
-	return hex.EncodeToString(key[:])
 }
 
 func (key NoisePublicKey) IsZero() bool {
@@ -82,10 +73,6 @@ func (key NoisePublicKey) Equals(tar NoisePublicKey) bool {
 	return subtle.ConstantTimeCompare(key[:], tar[:]) == 1
 }
 
-func (key *NoiseSymmetricKey) FromHex(src string) error {
+func (key *NoisePresharedKey) FromHex(src string) error {
 	return loadExactHex(key[:], src)
-}
-
-func (key NoiseSymmetricKey) ToHex() string {
-	return hex.EncodeToString(key[:])
 }

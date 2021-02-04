@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2021 WireGuard LLC. All Rights Reserved.
  */
 
 package main
@@ -31,11 +31,10 @@ func main() {
 	fmt.Fprintln(os.Stderr, "Warning: this is a test program for Windows, mainly used for debugging this Go package. For a real WireGuard for Windows client, the repo you want is <https://git.zx2c4.com/wireguard-windows/>, which includes this code as a module.")
 
 	logger := device.NewLogger(
-		device.LogLevelDebug,
+		device.LogLevelVerbose,
 		fmt.Sprintf("(%s) ", interfaceName),
 	)
-	logger.Info.Println("Starting wireguard-go version", device.WireGuardGoVersion)
-	logger.Debug.Println("Debug log enabled")
+	logger.Verbosef("Starting wireguard-go version %s", Version)
 
 	tun, err := tun.CreateTUN(interfaceName, 0)
 	if err == nil {
@@ -44,7 +43,7 @@ func main() {
 			interfaceName = realInterfaceName
 		}
 	} else {
-		logger.Error.Println("Failed to create TUN device:", err)
+		logger.Errorf("Failed to create TUN device: %v", err)
 		os.Exit(ExitSetupFailed)
 	}
 
@@ -52,11 +51,11 @@ func main() {
 		Logger: logger,
 	})
 	device.Up()
-	logger.Info.Println("Device started")
+	logger.Verbosef("Device started")
 
 	uapi, err := ipc.UAPIListen(interfaceName)
 	if err != nil {
-		logger.Error.Println("Failed to listen on uapi socket:", err)
+		logger.Errorf("Failed to listen on uapi socket: %v", err)
 		os.Exit(ExitSetupFailed)
 	}
 
@@ -73,7 +72,7 @@ func main() {
 			go device.IpcHandle(conn)
 		}
 	}()
-	logger.Info.Println("UAPI listener started")
+	logger.Verbosef("UAPI listener started")
 
 	// wait for program to terminate
 
@@ -92,5 +91,5 @@ func main() {
 	uapi.Close()
 	device.Close()
 
-	logger.Info.Println("Shutting down")
+	logger.Verbosef("Shutting down")
 }

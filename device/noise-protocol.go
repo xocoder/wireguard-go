@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2021 WireGuard LLC. All Rights Reserved.
  */
 
 package device
@@ -121,7 +121,7 @@ type Handshake struct {
 	mutex                     sync.RWMutex
 	hash                      [blake2s.Size]byte       // hash value
 	chainKey                  [blake2s.Size]byte       // chain key
-	presharedKey              NoiseSymmetricKey        // psk
+	presharedKey              NoisePresharedKey        // psk
 	localEphemeral            NoisePrivateKey          // ephemeral secret key
 	localIndex                uint32                   // used to clear hash-table
 	remoteIndex               uint32                   // index for sending
@@ -319,11 +319,11 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 	flood := time.Since(handshake.lastInitiationConsumption) <= HandshakeInitationRate
 	handshake.mutex.RUnlock()
 	if replay {
-		device.log.Debug.Printf("%v - ConsumeMessageInitiation: handshake replay @ %v\n", peer, timestamp)
+		device.log.Verbosef("%v - ConsumeMessageInitiation: handshake replay @ %v", peer, timestamp)
 		return nil
 	}
 	if flood {
-		device.log.Debug.Printf("%v - ConsumeMessageInitiation: handshake flood\n", peer)
+		device.log.Verbosef("%v - ConsumeMessageInitiation: handshake flood", peer)
 		return nil
 	}
 

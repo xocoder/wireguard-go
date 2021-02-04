@@ -1,39 +1,44 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2021 WireGuard LLC. All Rights Reserved.
  */
 
 package device
 
 import (
 	"bytes"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"io"
+	"io/ioutil"
+	"math/rand"
 	"net"
+	"runtime"
+	"runtime/pprof"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/tailscale/wireguard-go/tun/tuntest"
 )
 
-func getFreePort(t *testing.T) string {
+func getFreePort(tb testing.TB) string {
 	l, err := net.ListenPacket("udp", "localhost:0")
 	if err != nil {
-		t.Fatal(err)
+		tb.Fatal(err)
 	}
 	defer l.Close()
 	return fmt.Sprintf("%d", l.LocalAddr().(*net.UDPAddr).Port)
 }
 
-// uapiCfg returns a reader that contains cfg formatted use with IpcSetOperation.
+// uapiCfg returns a string that contains cfg formatted use with IpcSet.
 // cfg is a series of alternating key/value strings.
 // uapiCfg exists because editors and humans like to insert
 // whitespace into configs, which can cause failures, some of which are silent.
 // For example, a leading blank newline causes the remainder
 // of the config to be silently ignored.
-func uapiCfg(cfg ...string) io.ReadSeeker {
+func uapiCfg(cfg ...string) string {
 	if len(cfg)%2 != 0 {
 		panic("odd number of args to uapiReader")
 	}
@@ -46,16 +51,16 @@ func uapiCfg(cfg ...string) io.ReadSeeker {
 		}
 		buf.WriteByte(sep)
 	}
-	return bytes.NewReader(buf.Bytes())
+	return buf.String()
 }
 
 // genConfigs generates a pair of configs that connect to each other.
 // The configs use distinct, probably-usable ports.
-func genConfigs(t *testing.T) (cfgs [2]io.Reader) {
+func genConfigs(tb testing.TB) (cfgs [2]string) {
 	var port1, port2 string
 	for port1 == port2 {
-		port1 = getFreePort(t)
-		port2 = getFreePort(t)
+		port1 = getFreePort(tb)
+		port2 = getFreePort(tb)
 	}
 
 	cfgs[0] = uapiCfg(
@@ -98,8 +103,8 @@ const (
 	Pong SendDirection = false
 )
 
-func (pair *testPair) Send(t *testing.T, ping SendDirection, done chan struct{}) {
-	t.Helper()
+func (pair *testPair) Send(tb testing.TB, ping SendDirection, done chan struct{}) {
+	tb.Helper()
 	p0, p1 := pair[0], pair[1]
 	if !ping {
 		// pong is the new ping
@@ -127,16 +132,16 @@ func (pair *testPair) Send(t *testing.T, ping SendDirection, done chan struct{})
 		default:
 		}
 		// Real error.
-		t.Error(err)
+		tb.Error(err)
 	}
 }
 
 // genTestPair creates a testPair.
-func genTestPair(t *testing.T) (pair testPair) {
+func genTestPair(tb testing.TB) (pair testPair) {
 	const maxAttempts = 10
 NextAttempt:
 	for i := 0; i < maxAttempts; i++ {
-		cfg := genConfigs(t)
+		cfg := genConfigs(tb)
 		// Bring up a ChannelTun for each config.
 		for i := range pair {
 			p := &pair[i]
@@ -146,11 +151,15 @@ NextAttempt:
 			} else {
 				p.ip = net.ParseIP("1.0.0.2")
 			}
+			level := LogLevelVerbose
+			if _, ok := tb.(*testing.B); ok && !testing.Verbose() {
+				level = LogLevelError
+			}
 			p.dev = NewDevice(p.tun.TUN(), &DeviceOptions{
-				Logger: NewLogger(LogLevelDebug, fmt.Sprintf("dev%d: ", i)),
+				Logger: NewLogger(level, fmt.Sprintf("dev%d: ", i)),
 			})
 			p.dev.Up()
-			if err := p.dev.IpcSetOperation(cfg[i]); err != nil {
+			if err := p.dev.IpcSet(cfg[i]); err != nil {
 				// genConfigs attempted to pick ports that were free.
 				// There's a tiny window between genConfigs closing the port
 				// and us opening it, during which another process could
@@ -158,27 +167,30 @@ NextAttempt:
 				// Try again from the beginning.
 				// If there's something permanent wrong,
 				// we'll see that when we run out of attempts.
-				t.Logf("failed to configure device %d: %v", i, err)
+				tb.Logf("failed to configure device %d: %v", i, err)
+				p.dev.Close()
 				continue NextAttempt
 			}
 			// The device might still not be up, e.g. due to an error
 			// in RoutineTUNEventReader's call to dev.Up that got swallowed.
 			// Assume it's due to a transient error (port in use), and retry.
 			if !p.dev.isUp.Get() {
-				t.Logf("device %d did not come up, trying again", i)
+				tb.Logf("device %d did not come up, trying again", i)
+				p.dev.Close()
 				continue NextAttempt
 			}
 			// The device is up. Close it when the test completes.
-			t.Cleanup(p.dev.Close)
+			tb.Cleanup(p.dev.Close)
 		}
 		return // success
 	}
 
-	t.Fatalf("genChannelTUNs: failed %d times", maxAttempts)
+	tb.Fatalf("genChannelTUNs: failed %d times", maxAttempts)
 	return
 }
 
 func TestTwoDevicePing(t *testing.T) {
+	goroutineLeakCheck(t)
 	pair := genTestPair(t)
 	t.Run("ping 1.0.0.1", func(t *testing.T) {
 		pair.Send(t, Ping, nil)
@@ -186,6 +198,39 @@ func TestTwoDevicePing(t *testing.T) {
 	t.Run("ping 1.0.0.2", func(t *testing.T) {
 		pair.Send(t, Pong, nil)
 	})
+}
+
+func TestUpDown(t *testing.T) {
+	goroutineLeakCheck(t)
+	const itrials = 200
+	const otrials = 10
+
+	for n := 0; n < otrials; n++ {
+		pair := genTestPair(t)
+		for i := range pair {
+			for k := range pair[i].dev.peers.keyMap {
+				pair[i].dev.IpcSet(fmt.Sprintf("public_key=%s\npersistent_keepalive_interval=1\n", hex.EncodeToString(k[:])))
+			}
+		}
+		var wg sync.WaitGroup
+		wg.Add(len(pair))
+		for i := range pair {
+			go func(d *Device) {
+				defer wg.Done()
+				for i := 0; i < itrials; i++ {
+					d.Up()
+					time.Sleep(time.Duration(rand.Intn(int(time.Nanosecond * (0x10000 - 1)))))
+					d.Down()
+					time.Sleep(time.Duration(rand.Intn(int(time.Nanosecond * (0x10000 - 1)))))
+				}
+			}(pair[i].dev)
+		}
+		wg.Wait()
+		for i := range pair {
+			pair[i].dev.Up()
+			pair[i].dev.Close()
+		}
+	}
 }
 
 // TestConcurrencySafety does other things concurrently with tunnel use.
@@ -217,9 +262,8 @@ func TestConcurrencySafety(t *testing.T) {
 	}()
 	warmup.Wait()
 
-	applyCfg := func(cfg io.ReadSeeker) {
-		cfg.Seek(0, io.SeekStart)
-		err := pair[0].dev.IpcSetOperation(cfg)
+	applyCfg := func(cfg string) {
+		err := pair[0].dev.IpcSet(cfg)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -280,4 +324,100 @@ func randDevice(t *testing.T) *Device {
 	})
 	device.SetPrivateKey(sk)
 	return device
+}
+
+func BenchmarkLatency(b *testing.B) {
+	pair := genTestPair(b)
+
+	// Establish a connection.
+	pair.Send(b, Ping, nil)
+	pair.Send(b, Pong, nil)
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		pair.Send(b, Ping, nil)
+		pair.Send(b, Pong, nil)
+	}
+}
+
+func BenchmarkThroughput(b *testing.B) {
+	pair := genTestPair(b)
+
+	// Establish a connection.
+	pair.Send(b, Ping, nil)
+	pair.Send(b, Pong, nil)
+
+	// Measure how long it takes to receive b.N packets,
+	// starting when we receive the first packet.
+	var recv uint64
+	var elapsed time.Duration
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		var start time.Time
+		for {
+			<-pair[0].tun.Inbound
+			new := atomic.AddUint64(&recv, 1)
+			if new == 1 {
+				start = time.Now()
+			}
+			// Careful! Don't change this to else if; b.N can be equal to 1.
+			if new == uint64(b.N) {
+				elapsed = time.Since(start)
+				return
+			}
+		}
+	}()
+
+	// Send packets as fast as we can until we've received enough.
+	ping := tuntest.Ping(pair[0].ip, pair[1].ip)
+	pingc := pair[1].tun.Outbound
+	var sent uint64
+	for atomic.LoadUint64(&recv) != uint64(b.N) {
+		sent++
+		pingc <- ping
+	}
+	wg.Wait()
+
+	b.ReportMetric(float64(elapsed)/float64(b.N), "ns/op")
+	b.ReportMetric(1-float64(b.N)/float64(sent), "packet-loss")
+}
+
+func BenchmarkUAPIGet(b *testing.B) {
+	pair := genTestPair(b)
+	pair.Send(b, Ping, nil)
+	pair.Send(b, Pong, nil)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		pair[0].dev.IpcGetOperation(ioutil.Discard)
+	}
+}
+
+func goroutineLeakCheck(t *testing.T) {
+	goroutines := func() (int, []byte) {
+		p := pprof.Lookup("goroutine")
+		b := new(bytes.Buffer)
+		p.WriteTo(b, 1)
+		return p.Count(), b.Bytes()
+	}
+
+	startGoroutines, startStacks := goroutines()
+	t.Cleanup(func() {
+		if t.Failed() {
+			return
+		}
+		// Give goroutines time to exit, if they need it.
+		for i := 0; i < 10000; i++ {
+			if runtime.NumGoroutine() <= startGoroutines {
+				return
+			}
+			time.Sleep(1 * time.Millisecond)
+		}
+		endGoroutines, endStacks := goroutines()
+		t.Logf("starting stacks:\n%s\n", startStacks)
+		t.Logf("ending stacks:\n%s\n", endStacks)
+		t.Fatalf("expected %d goroutines, got %d, leak?", startGoroutines, endGoroutines)
+	})
 }

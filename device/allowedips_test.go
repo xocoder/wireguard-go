@@ -1,6 +1,6 @@
 /* SPDX-License-Identifier: MIT
  *
- * Copyright (C) 2017-2020 WireGuard LLC. All Rights Reserved.
+ * Copyright (C) 2017-2021 WireGuard LLC. All Rights Reserved.
  */
 
 package device
@@ -18,26 +18,6 @@ type testPairCommonBits struct {
 	s1    []byte
 	s2    []byte
 	match uint
-}
-
-type testPairTrieInsert struct {
-	key  []byte
-	cidr uint
-	peer *Peer
-}
-
-type testPairTrieLookup struct {
-	key  []byte
-	peer *Peer
-}
-
-func printTrie(t *testing.T, p *trieEntry) {
-	if p == nil {
-		return
-	}
-	t.Log(p)
-	printTrie(t, p.child[0])
-	printTrie(t, p.child[1])
 }
 
 func TestCommonBits(t *testing.T) {
