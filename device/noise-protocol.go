@@ -15,7 +15,6 @@ import (
 	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/poly1305"
 
-	"github.com/tailscale/wireguard-go/device/tokenbucket"
 	"github.com/tailscale/wireguard-go/tai64n"
 )
 
@@ -130,7 +129,6 @@ type Handshake struct {
 	remoteEphemeral           NoisePublicKey           // ephemeral public key
 	precomputedStaticStatic   [NoisePublicKeySize]byte // precomputed shared secret
 	lastTimestamp             tai64n.Timestamp
-	initiationLimit           tokenbucket.TokenBucket
 	lastInitiationConsumption time.Time
 	lastSentHandshake         time.Time
 }
@@ -318,8 +316,7 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 	// protect against replay & flood
 
 	replay := !timestamp.After(handshake.lastTimestamp)
-	now := time.Now()
-	flood := !handshake.initiationLimit.CanTake(now)
+	flood := time.Since(handshake.lastInitiationConsumption) <= HandshakeInitationRate
 	handshake.mutex.RUnlock()
 	if replay {
 		device.log.Debug.Printf("%v - ConsumeMessageInitiation: handshake replay @ %v\n", peer, timestamp)
@@ -342,11 +339,15 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 		if timestamp.After(handshake.lastTimestamp) {
 			handshake.lastTimestamp = timestamp
 		}
-		handshake.initiationLimit.Take(now)
 		handshake.state = handshakeInitiationConsumed
 	} else {
 		device.log.Debug.Printf("%v - race: remote initiation IGNORED.\n", peer)
 	}
+	now := time.Now()
+	if now.After(handshake.lastInitiationConsumption) {
+		handshake.lastInitiationConsumption = now
+	}
+	handshake.state = handshakeInitiationConsumed
 
 	handshake.mutex.Unlock()
 
