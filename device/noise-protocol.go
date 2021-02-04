@@ -331,17 +331,12 @@ func (device *Device) ConsumeMessageInitiation(msg *MessageInitiation) *Peer {
 
 	handshake.mutex.Lock()
 
-	if handshake.state != handshakeInitiationCreated || device.staticIdentity.publicKey.LessThan(&handshake.remoteStatic) {
-		handshake.hash = hash
-		handshake.chainKey = chainKey
-		handshake.remoteIndex = msg.Sender
-		handshake.remoteEphemeral = msg.Ephemeral
-		if timestamp.After(handshake.lastTimestamp) {
-			handshake.lastTimestamp = timestamp
-		}
-		handshake.state = handshakeInitiationConsumed
-	} else {
-		device.log.Debug.Printf("%v - race: remote initiation IGNORED.\n", peer)
+	handshake.hash = hash
+	handshake.chainKey = chainKey
+	handshake.remoteIndex = msg.Sender
+	handshake.remoteEphemeral = msg.Ephemeral
+	if timestamp.After(handshake.lastTimestamp) {
+		handshake.lastTimestamp = timestamp
 	}
 	now := time.Now()
 	if now.After(handshake.lastInitiationConsumption) {
