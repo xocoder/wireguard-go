@@ -147,3 +147,4 @@ func (t *chTun) Close() error {
 	t.Write(nil, -1)
 	return nil
 }
+func (t *chTun) Delete(forceCloseSessions bool) (bool, error) { return false, nil }
