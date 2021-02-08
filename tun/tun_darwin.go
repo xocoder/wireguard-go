@@ -275,6 +275,11 @@ func (tun *NativeTun) Close() error {
 }
 
 // Delete is Windows-only function. Here it does nothing.
+func (tun *NativeTun) Delete(forceCloseSessions bool) (bool, error) {
+	return false, nil
+}
+
+// Delete is Windows-only function. Here it does nothing.
 func (tun *NativeTun) Delete(forceCloseSessions bool) (bool, err error) {
 	return false, nil
 }
