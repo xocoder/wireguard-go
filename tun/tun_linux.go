@@ -387,6 +387,11 @@ func (tun *NativeTun) Close() error {
 	return err2
 }
 
+// Delete is Windows-only function. Here it does nothing.
+func (tun *NativeTun) Delete(forceCloseSessions bool) (bool, err error) {
+	return false, nil
+}
+
 func CreateTUN(name string, mtu int) (Device, error) {
 	nfd, err := unix.Open(cloneDevicePath, os.O_RDWR, 0)
 	if err != nil {

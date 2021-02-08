@@ -270,6 +270,11 @@ func (tun *NativeTun) Close() error {
 	return err2
 }
 
+// Delete is Windows-only function. Here it does nothing.
+func (tun *NativeTun) Delete(forceCloseSessions bool) (bool, err error) {
+	return false, nil
+}
+
 func (tun *NativeTun) setMTU(n int) error {
 	// open datagram socket
 

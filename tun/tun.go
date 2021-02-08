@@ -26,4 +26,5 @@ type Device interface {
 	Name() (string, error)          // fetches and returns the current name
 	Events() chan Event             // returns a constant channel of events related to the device
 	Close() error                   // stops the device and closes the event channel
+	Delete(bool) (bool, error)      // Deletes the underlying TUN interface. For Windows only. For other OS it does nothing
 }

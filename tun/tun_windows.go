@@ -132,6 +132,10 @@ func (tun *NativeTun) Close() error {
 	return err
 }
 
+func (tun *NativeTun) Delete(forceCloseSessions bool) (rebootRequired bool, err error) {
+	return tun.wt.Delete(forceCloseSessions)
+}
+
 func (tun *NativeTun) MTU() (int, error) {
 	return tun.forcedMTU, nil
 }
