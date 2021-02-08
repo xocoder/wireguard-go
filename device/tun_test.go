@@ -41,6 +41,8 @@ func (d *dummyTUN) Close() error {
 	return nil
 }
 
+func (t *dummyTUN) Delete(forceCloseSessions bool) (bool, error) { return false, nil }
+
 func (d *dummyTUN) Read(b []byte, offset int) (int, error) {
 	buf, ok := <-d.packets
 	if !ok {
