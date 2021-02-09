@@ -165,16 +165,13 @@ func (device *Device) RoutineReceiveIncoming(IP int, bind conn.Bind) {
 			elem.Lock()
 
 			// add to decryption queues
-			peer.queue.RLock()
 			if peer.isRunning.Get() {
-				peer.queue.inbound <- elem
+				peer.queue.inbound.c <- elem
 				device.queue.decryption.c <- elem
 				buffer = device.GetMessageBuffer()
 			} else {
 				device.PutInboundElement(elem)
 			}
-			peer.queue.RUnlock()
-
 			continue
 
 		// otherwise it is a fixed size & handshake related packet
@@ -209,10 +206,8 @@ func (device *Device) RoutineReceiveIncoming(IP int, bind conn.Bind) {
 
 func (device *Device) RoutineDecryption() {
 	var nonce [chacha20poly1305.NonceSize]byte
-	defer func() {
-		device.log.Verbosef("Routine: decryption worker - stopped")
-		device.state.stopping.Done()
-	}()
+
+	defer device.log.Verbosef("Routine: decryption worker - stopped")
 	device.log.Verbosef("Routine: decryption worker - started")
 
 	for elem := range device.queue.decryption.c {
@@ -243,7 +238,7 @@ func (device *Device) RoutineDecryption() {
 func (device *Device) RoutineHandshake() {
 	defer func() {
 		device.log.Verbosef("Routine: handshake worker - stopped")
-		device.state.stopping.Done()
+		device.queue.encryption.wg.Done()
 	}()
 	device.log.Verbosef("Routine: handshake worker - started")
 
@@ -409,7 +404,10 @@ func (peer *Peer) RoutineSequentialReceiver() {
 	}()
 	device.log.Verbosef("%v - Routine: sequential receiver - started", peer)
 
-	for elem := range peer.queue.inbound {
+	for elem := range peer.queue.inbound.c {
+		if elem == nil {
+			return
+		}
 		var err error
 		elem.Lock()
 		if elem.packet == nil {
@@ -478,10 +476,10 @@ func (peer *Peer) RoutineSequentialReceiver() {
 		}
 
 		_, err = device.tun.device.Write(elem.buffer[:MessageTransportOffsetContent+len(elem.packet)], MessageTransportOffsetContent)
-		if err != nil && !device.isClosed.Get() {
+		if err != nil && !device.isClosed() {
 			device.log.Errorf("Failed to write packet to TUN device: %v", err)
 		}
-		if len(peer.queue.inbound) == 0 {
+		if len(peer.queue.inbound.c) == 0 {
 			err = device.tun.device.Flush()
 			if err != nil {
 				peer.device.log.Errorf("Unable to flush packets: %v", err)

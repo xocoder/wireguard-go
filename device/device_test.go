@@ -8,7 +8,6 @@ package device
 import (
 	"bytes"
 	"encoding/hex"
-	"errors"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
@@ -22,15 +21,6 @@ import (
 
 	"github.com/tailscale/wireguard-go/tun/tuntest"
 )
-
-func getFreePort(tb testing.TB) string {
-	l, err := net.ListenPacket("udp", "localhost:0")
-	if err != nil {
-		tb.Fatal(err)
-	}
-	defer l.Close()
-	return fmt.Sprintf("%d", l.LocalAddr().(*net.UDPAddr).Port)
-}
 
 // uapiCfg returns a string that contains cfg formatted use with IpcSet.
 // cfg is a series of alternating key/value strings.
@@ -56,32 +46,43 @@ func uapiCfg(cfg ...string) string {
 
 // genConfigs generates a pair of configs that connect to each other.
 // The configs use distinct, probably-usable ports.
-func genConfigs(tb testing.TB) (cfgs [2]string) {
-	var port1, port2 string
-	for port1 == port2 {
-		port1 = getFreePort(tb)
-		port2 = getFreePort(tb)
+func genConfigs(tb testing.TB) (cfgs [2]string, endpointCfgs [2]string) {
+	var key1, key2 NoisePrivateKey
+	_, err := rand.Read(key1[:])
+	if err != nil {
+		tb.Errorf("unable to generate private key random bytes: %v", err)
 	}
+	_, err = rand.Read(key2[:])
+	if err != nil {
+		tb.Errorf("unable to generate private key random bytes: %v", err)
+	}
+	pub1, pub2 := key1.publicKey(), key2.publicKey()
 
 	cfgs[0] = uapiCfg(
-		"private_key", "481eb0d8113a4a5da532d2c3e9c14b53c8454b34ab109676f6b58c2245e37b58",
-		"listen_port", port1,
+		"private_key", hex.EncodeToString(key1[:]),
+		"listen_port", "0",
 		"replace_peers", "true",
-		"public_key", "f70dbb6b1b92a1dde1c783b297016af3f572fef13b0abb16a2623d89a58e9725",
+		"public_key", hex.EncodeToString(pub2[:]),
 		"protocol_version", "1",
 		"replace_allowed_ips", "true",
 		"allowed_ip", "1.0.0.2/32",
-		"endpoint", "127.0.0.1:"+port2,
+	)
+	endpointCfgs[0] = uapiCfg(
+		"public_key", hex.EncodeToString(pub2[:]),
+		"endpoint", "127.0.0.1:%d",
 	)
 	cfgs[1] = uapiCfg(
-		"private_key", "98c7989b1661a0d64fd6af3502000f87716b7c4bbcf00d04fc6073aa7b539768",
-		"listen_port", port2,
+		"private_key", hex.EncodeToString(key2[:]),
+		"listen_port", "0",
 		"replace_peers", "true",
-		"public_key", "49e80929259cebdda4f322d6d2b1a6fad819d603acd26fd5d845e7a123036427",
+		"public_key", hex.EncodeToString(pub1[:]),
 		"protocol_version", "1",
 		"replace_allowed_ips", "true",
 		"allowed_ip", "1.0.0.1/32",
-		"endpoint", "127.0.0.1:"+port1,
+	)
+	endpointCfgs[1] = uapiCfg(
+		"public_key", hex.EncodeToString(pub1[:]),
+		"endpoint", "127.0.0.1:%d",
 	)
 	return
 }
@@ -103,6 +104,13 @@ const (
 	Pong SendDirection = false
 )
 
+func (d SendDirection) String() string {
+	if d == Ping {
+		return "ping"
+	}
+	return "pong"
+}
+
 func (pair *testPair) Send(tb testing.TB, ping SendDirection, done chan struct{}) {
 	tb.Helper()
 	p0, p1 := pair[0], pair[1]
@@ -118,10 +126,10 @@ func (pair *testPair) Send(tb testing.TB, ping SendDirection, done chan struct{}
 	select {
 	case msgRecv := <-p0.tun.Inbound:
 		if !bytes.Equal(msg, msgRecv) {
-			err = errors.New("ping did not transit correctly")
+			err = fmt.Errorf("%s did not transit correctly", ping)
 		}
 	case <-timer.C:
-		err = errors.New("ping did not transit")
+		err = fmt.Errorf("%s did not transit", ping)
 	case <-done:
 	}
 	if err != nil {
@@ -138,54 +146,42 @@ func (pair *testPair) Send(tb testing.TB, ping SendDirection, done chan struct{}
 
 // genTestPair creates a testPair.
 func genTestPair(tb testing.TB) (pair testPair) {
-	const maxAttempts = 10
-NextAttempt:
-	for i := 0; i < maxAttempts; i++ {
-		cfg := genConfigs(tb)
-		// Bring up a ChannelTun for each config.
-		for i := range pair {
-			p := &pair[i]
-			p.tun = tuntest.NewChannelTUN()
-			if i == 0 {
-				p.ip = net.ParseIP("1.0.0.1")
-			} else {
-				p.ip = net.ParseIP("1.0.0.2")
-			}
-			level := LogLevelVerbose
-			if _, ok := tb.(*testing.B); ok && !testing.Verbose() {
-				level = LogLevelError
-			}
-			p.dev = NewDevice(p.tun.TUN(), &DeviceOptions{
-				Logger: NewLogger(level, fmt.Sprintf("dev%d: ", i)),
-			})
-			p.dev.Up()
-			if err := p.dev.IpcSet(cfg[i]); err != nil {
-				// genConfigs attempted to pick ports that were free.
-				// There's a tiny window between genConfigs closing the port
-				// and us opening it, during which another process could
-				// start using it. We probably just lost that race.
-				// Try again from the beginning.
-				// If there's something permanent wrong,
-				// we'll see that when we run out of attempts.
-				tb.Logf("failed to configure device %d: %v", i, err)
-				p.dev.Close()
-				continue NextAttempt
-			}
-			// The device might still not be up, e.g. due to an error
-			// in RoutineTUNEventReader's call to dev.Up that got swallowed.
-			// Assume it's due to a transient error (port in use), and retry.
-			if !p.dev.isUp.Get() {
-				tb.Logf("device %d did not come up, trying again", i)
-				p.dev.Close()
-				continue NextAttempt
-			}
-			// The device is up. Close it when the test completes.
-			tb.Cleanup(p.dev.Close)
+	cfg, endpointCfg := genConfigs(tb)
+	// Bring up a ChannelTun for each config.
+	for i := range pair {
+		p := &pair[i]
+		p.tun = tuntest.NewChannelTUN()
+		p.ip = net.IPv4(1, 0, 0, byte(i+1))
+		level := LogLevelVerbose
+		if _, ok := tb.(*testing.B); ok && !testing.Verbose() {
+			level = LogLevelError
 		}
-		return // success
+		p.dev = NewDevice(p.tun.TUN(), &DeviceOptions{
+			Logger: NewLogger(level, fmt.Sprintf("dev%d: ", i)),
+		})
+		p.dev.Up()
+		if err := p.dev.IpcSet(cfg[i]); err != nil {
+			tb.Errorf("failed to configure device %d: %v", i, err)
+			p.dev.Close()
+			continue
+		}
+		if !p.dev.isUp() {
+			tb.Errorf("device %d did not come up", i)
+			p.dev.Close()
+			continue
+		}
+		endpointCfg[i^1] = fmt.Sprintf(endpointCfg[i^1], p.dev.net.port)
 	}
-
-	tb.Fatalf("genChannelTUNs: failed %d times", maxAttempts)
+	for i := range pair {
+		p := &pair[i]
+		if err := p.dev.IpcSet(endpointCfg[i]); err != nil {
+			tb.Errorf("failed to configure device endpoint %d: %v", i, err)
+			p.dev.Close()
+			continue
+		}
+		// The device is ready. Close it when the test completes.
+		tb.Cleanup(p.dev.Close)
+	}
 	return
 }
 
@@ -202,8 +198,8 @@ func TestTwoDevicePing(t *testing.T) {
 
 func TestUpDown(t *testing.T) {
 	goroutineLeakCheck(t)
-	const itrials = 200
-	const otrials = 10
+	const itrials = 20
+	const otrials = 1
 
 	for n := 0; n < otrials; n++ {
 		pair := genTestPair(t)
@@ -271,8 +267,13 @@ func TestConcurrencySafety(t *testing.T) {
 
 	// Change persistent_keepalive_interval concurrently with tunnel use.
 	t.Run("persistentKeepaliveInterval", func(t *testing.T) {
+		var pub NoisePublicKey
+		for key := range pair[0].dev.peers.keyMap {
+			pub = key
+			break
+		}
 		cfg := uapiCfg(
-			"public_key", "f70dbb6b1b92a1dde1c783b297016af3f572fef13b0abb16a2623d89a58e9725",
+			"public_key", hex.EncodeToString(pub[:]),
 			"persistent_keepalive_interval", "1",
 		)
 		for i := 0; i < 1000; i++ {
@@ -283,7 +284,7 @@ func TestConcurrencySafety(t *testing.T) {
 	// Change private keys concurrently with tunnel use.
 	t.Run("privateKey", func(t *testing.T) {
 		bad := uapiCfg("private_key", "7777777777777777777777777777777777777777777777777777777777777777")
-		good := uapiCfg("private_key", "481eb0d8113a4a5da532d2c3e9c14b53c8454b34ab109676f6b58c2245e37b58")
+		good := uapiCfg("private_key", hex.EncodeToString(pair[0].dev.staticIdentity.privateKey[:]))
 		// Set iters to a large number like 1000 to flush out data races quickly.
 		// Don't leave it large. That can cause logical races
 		// in which the handshake is interleaved with key changes

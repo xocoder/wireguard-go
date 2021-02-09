@@ -8,8 +8,8 @@
 package conn
 
 import (
+	"errors"
 	"net"
-	"os"
 	"syscall"
 )
 
@@ -84,31 +84,25 @@ func listenNet(network string, port int) (*net.UDPConn, int, error) {
 	return conn, uaddr.Port, nil
 }
 
-func extractErrno(err error) error {
-	opErr, ok := err.(*net.OpError)
-	if !ok {
-		return nil
-	}
-	syscallErr, ok := opErr.Err.(*os.SyscallError)
-	if !ok {
-		return nil
-	}
-	return syscallErr.Err
-}
-
 func createBind(uport uint16) (Bind, uint16, error) {
 	var err error
 	var bind nativeBind
+	var tries int
 
+again:
 	port := int(uport)
 
 	bind.ipv4, port, err = listenNet("udp4", port)
-	if err != nil && extractErrno(err) != syscall.EAFNOSUPPORT {
+	if err != nil && !errors.Is(err, syscall.EAFNOSUPPORT) {
 		return nil, 0, err
 	}
 
 	bind.ipv6, port, err = listenNet("udp6", port)
-	if err != nil && extractErrno(err) != syscall.EAFNOSUPPORT {
+	if uport == 0 && err != nil && errors.Is(err, syscall.EADDRINUSE) && tries < 100 {
+		tries++
+		goto again
+	}
+	if err != nil && !errors.Is(err, syscall.EAFNOSUPPORT) {
 		bind.ipv4.Close()
 		bind.ipv4 = nil
 		return nil, 0, err
