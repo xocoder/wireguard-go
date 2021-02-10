@@ -8,6 +8,7 @@ package device
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/ioutil"
 	"math/rand"
@@ -16,6 +17,7 @@ import (
 	"runtime/pprof"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
@@ -159,14 +161,13 @@ func genTestPair(tb testing.TB) (pair testPair) {
 		p.dev = NewDevice(p.tun.TUN(), &DeviceOptions{
 			Logger: NewLogger(level, fmt.Sprintf("dev%d: ", i)),
 		})
-		p.dev.Up()
 		if err := p.dev.IpcSet(cfg[i]); err != nil {
 			tb.Errorf("failed to configure device %d: %v", i, err)
 			p.dev.Close()
 			continue
 		}
-		if !p.dev.isUp() {
-			tb.Errorf("device %d did not come up", i)
+		if err := p.dev.Up(); err != nil {
+			tb.Errorf("failed to bring up device %d: %v", i, err)
 			p.dev.Close()
 			continue
 		}
@@ -214,9 +215,22 @@ func TestUpDown(t *testing.T) {
 			go func(d *Device) {
 				defer wg.Done()
 				for i := 0; i < itrials; i++ {
-					d.Up()
+					start := time.Now()
+					for {
+						if err := d.Up(); err != nil {
+							if errors.Is(err, syscall.EADDRINUSE) && time.Now().Sub(start) < time.Second*4 {
+								// Some other test process is racing with us, so try again.
+								time.Sleep(time.Millisecond * 10)
+								continue
+							}
+							t.Errorf("failed up bring up device: %v", err)
+						}
+						break
+					}
 					time.Sleep(time.Duration(rand.Intn(int(time.Nanosecond * (0x10000 - 1)))))
-					d.Down()
+					if err := d.Down(); err != nil {
+						t.Errorf("failed to bring down device: %v", err)
+					}
 					time.Sleep(time.Duration(rand.Intn(int(time.Nanosecond * (0x10000 - 1)))))
 				}
 			}(pair[i].dev)
