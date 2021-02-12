@@ -49,6 +49,7 @@ type QueueOutboundElement struct {
 	nonce   uint64                // nonce for encryption
 	keypair *Keypair              // keypair for encryption
 	peer    *Peer                 // related peer
+	typ     string
 }
 
 func (device *Device) NewOutboundElement() *QueueOutboundElement {
@@ -76,6 +77,7 @@ func (elem *QueueOutboundElement) clearPointers() {
 func (peer *Peer) SendKeepalive() {
 	if len(peer.queue.staged) == 0 && peer.isRunning.Get() {
 		elem := peer.device.NewOutboundElement()
+		elem.typ = "keepalive"
 		select {
 		case peer.queue.staged <- elem:
 			peer.device.log.Verbosef("%v - Sending keepalive packet", peer)
@@ -243,6 +245,7 @@ func (device *Device) RoutineReadFromTUN() {
 		}
 
 		elem.packet = elem.buffer[offset : offset+size]
+		elem.typ = "data"
 
 		// lookup peer
 
@@ -316,7 +319,7 @@ top:
 			if elem.nonce >= RejectAfterMessages {
 				atomic.StoreUint64(&keypair.sendNonce, RejectAfterMessages)
 				peer.StagePacket(elem) // XXX: Out of order, but we can't front-load go chans
-				peer.device.log.Verbosef("%s - SendStagedPackets: restage packet %p", peer, elem)
+				peer.device.log.Verbosef("%s - SendStagedPackets: restage packet %p of type %s", peer, elem, elem.typ)
 				goto top
 			}
 
@@ -325,16 +328,16 @@ top:
 
 			// add to parallel and sequential queue
 			if peer.isRunning.Get() {
-				peer.device.log.Verbosef("%s - SendStagedPackets: enqueued %p", peer, elem)
+				peer.device.log.Verbosef("%s - SendStagedPackets: enqueued %p of type %s", peer, elem, elem.typ)
 				peer.queue.outbound.c <- elem
 				peer.device.queue.encryption.c <- elem
 			} else {
-				peer.device.log.Verbosef("%s - SendStagedPackets: peer not running, dropped %p", peer, elem)
+				peer.device.log.Verbosef("%s - SendStagedPackets: peer not running, dropped elem %p of type %s", peer, elem, elem.typ)
 				peer.device.PutMessageBuffer(elem.buffer)
 				peer.device.PutOutboundElement(elem)
 			}
 		default:
-			peer.device.log.Verbosef("%s - SendStagedPackets: nothing to send")
+			peer.device.log.Verbosef("%s - SendStagedPackets: nothing to send", peer)
 			return
 		}
 	}
