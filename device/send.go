@@ -88,12 +88,14 @@ func (peer *Peer) SendKeepalive() {
 }
 
 func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
+	peer.device.log.Verbosef("%s - SendHandshakeInitiation(isRetry=%v)", peer, isRetry)
 	if !isRetry {
 		atomic.StoreUint32(&peer.timers.handshakeAttempts, 0)
 	}
 
 	peer.handshake.mutex.RLock()
 	if time.Since(peer.handshake.lastSentHandshake) < RekeyTimeout {
+		peer.device.log.Verbosef("%s - SendHandshakeInitiation abandoned, not ready to rekey", peer)
 		peer.handshake.mutex.RUnlock()
 		return nil
 	}
@@ -101,6 +103,7 @@ func (peer *Peer) SendHandshakeInitiation(isRetry bool) error {
 
 	peer.handshake.mutex.Lock()
 	if time.Since(peer.handshake.lastSentHandshake) < RekeyTimeout {
+		peer.device.log.Verbosef("%s - SendHandshakeInitiation abandoned, not ready to rekey (2)", peer)
 		peer.handshake.mutex.Unlock()
 		return nil
 	}
@@ -291,13 +294,16 @@ func (peer *Peer) StagePacket(elem *QueueOutboundElement) {
 }
 
 func (peer *Peer) SendStagedPackets() {
+	peer.device.log.Verbosef("%s - SendStagedPackets", peer)
 top:
 	if len(peer.queue.staged) == 0 || !peer.device.isUp() {
+		peer.device.log.Verbosef("%s - SendStagedPackets: nothing to send or device down", peer)
 		return
 	}
 
 	keypair := peer.keypairs.Current()
 	if keypair == nil || atomic.LoadUint64(&keypair.sendNonce) >= RejectAfterMessages || time.Since(keypair.created) >= RejectAfterTime {
+		peer.device.log.Verbosef("%s - SendStagedPackets: sending handshake initiation instead", peer)
 		peer.SendHandshakeInitiation(false)
 		return
 	}
@@ -310,6 +316,7 @@ top:
 			if elem.nonce >= RejectAfterMessages {
 				atomic.StoreUint64(&keypair.sendNonce, RejectAfterMessages)
 				peer.StagePacket(elem) // XXX: Out of order, but we can't front-load go chans
+				peer.device.log.Verbosef("%s - SendStagedPackets: restage packet %p", peer, elem)
 				goto top
 			}
 
@@ -318,13 +325,16 @@ top:
 
 			// add to parallel and sequential queue
 			if peer.isRunning.Get() {
+				peer.device.log.Verbosef("%s - SendStagedPackets: enqueued %p", peer, elem)
 				peer.queue.outbound.c <- elem
 				peer.device.queue.encryption.c <- elem
 			} else {
+				peer.device.log.Verbosef("%s - SendStagedPackets: peer not running, dropped %p", peer, elem)
 				peer.device.PutMessageBuffer(elem.buffer)
 				peer.device.PutOutboundElement(elem)
 			}
 		default:
+			peer.device.log.Verbosef("%s - SendStagedPackets: nothing to send")
 			return
 		}
 	}

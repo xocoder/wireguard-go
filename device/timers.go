@@ -127,7 +127,6 @@ func expiredNewHandshake(peer *Peer) {
 	}
 	peer.Unlock()
 	peer.SendHandshakeInitiation(false)
-
 }
 
 func expiredZeroKeyMaterial(peer *Peer) {
