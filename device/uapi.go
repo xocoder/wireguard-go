@@ -46,19 +46,9 @@ var byteBufferPool = &sync.Pool{
 	New: func() interface{} { return new(bytes.Buffer) },
 }
 
-// IPCGetFilter are options to control which fields are omitted from Device.IpcGetOperationFiltered.
-type IPCGetFilter struct {
-	// FilterAllowedIPs controls whether AllowedIPs are omitted in the output.
-	FilterAllowedIPs bool
-}
-
-func (device *Device) IpcGetOperation(w io.Writer) error {
-	return device.IpcGetOperationFiltered(w, IPCGetFilter{})
-}
-
 // IpcGetOperation implements the WireGuard configuration protocol "get" operation.
 // See https://www.wireguard.com/xplatform/#configuration-protocol for details.
-func (device *Device) IpcGetOperationFiltered(w io.Writer, filter IPCGetFilter) error {
+func (device *Device) IpcGetOperation(w io.Writer) error {
 	device.ipcMutex.RLock()
 	defer device.ipcMutex.RUnlock()
 
@@ -131,12 +121,10 @@ func (device *Device) IpcGetOperationFiltered(w io.Writer, filter IPCGetFilter) 
 			sendf("rx_bytes=%d", atomic.LoadUint64(&peer.stats.rxBytes))
 			sendf("persistent_keepalive_interval=%d", atomic.LoadUint32(&peer.persistentKeepaliveInterval))
 
-			if !filter.FilterAllowedIPs {
-				device.allowedips.EntriesForPeer(peer, func(ip net.IP, cidr uint) bool {
-					sendf("allowed_ip=%s/%d", ip.String(), cidr)
-					return true
-				})
-			}
+			device.allowedips.EntriesForPeer(peer, func(ip net.IP, cidr uint) bool {
+				sendf("allowed_ip=%s/%d", ip.String(), cidr)
+				return true
+			})
 		}
 	}()
 
