@@ -288,8 +288,6 @@ func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
 }
 
 type DeviceOptions struct {
-	Logger *Logger
-
 	// HandshakeDone is called every time we complete a peer handshake.
 	HandshakeDone func(peerKey NoisePublicKey, peer *Peer, allowedIPs *AllowedIPs)
 
