@@ -15,8 +15,6 @@ import (
 	"github.com/tailscale/wireguard-go/ratelimiter"
 	"github.com/tailscale/wireguard-go/rwcancel"
 	"github.com/tailscale/wireguard-go/tun"
-	"golang.org/x/net/ipv4"
-	"golang.org/x/net/ipv6"
 )
 
 type Device struct {
@@ -54,20 +52,19 @@ type Device struct {
 		publicKey  NoisePublicKey
 	}
 
+	rate struct {
+		underLoadUntil int64
+		limiter        ratelimiter.Ratelimiter
+	}
+
 	peers struct {
-		empty        AtomicBool // empty reports whether len(keyMap) == 0
-		sync.RWMutex            // protects keyMap
+		sync.RWMutex // protects keyMap
 		keyMap       map[NoisePublicKey]*Peer
 	}
 
 	allowedips    AllowedIPs
 	indexTable    IndexTable
 	cookieChecker CookieChecker
-
-	rate struct {
-		underLoadUntil int64
-		limiter        ratelimiter.Ratelimiter
-	}
 
 	pool struct {
 		messageBuffers   *WaitPool
@@ -93,9 +90,6 @@ type Device struct {
 	// Tailscale options (to be deleted)
 	handshakeDone        func(peerKey NoisePublicKey, peer *Peer, allowedIPs *AllowedIPs)
 	prependKeyToEndpoint bool
-	skipBindUpdate       bool
-	createBind           func(uport uint16) (conn.Bind, uint16, error)
-	createEndpoint       func(s string) (conn.Endpoint, error)
 }
 
 // deviceState represents the state of a Device.
@@ -141,7 +135,6 @@ func removePeerLocked(device *Device, peer *Peer, key NoisePublicKey) {
 
 	// remove from peer map
 	delete(device.peers.keyMap, key)
-	device.peers.empty.Set(len(device.peers.keyMap) == 0)
 }
 
 // changeState attempts to change the device state to match want.
@@ -291,32 +284,25 @@ func (device *Device) SetPrivateKey(sk NoisePrivateKey) error {
 type DeviceOptions struct {
 	// HandshakeDone is called every time we complete a peer handshake.
 	HandshakeDone func(peerKey NoisePublicKey, peer *Peer, allowedIPs *AllowedIPs)
-
-	CreateEndpoint func(s string) (conn.Endpoint, error)
-	CreateBind     func(uport uint16) (conn.Bind, uint16, error)
 }
 
-func NewDevice(tunDevice tun.Device, logger *Logger, opts ...*DeviceOptions) *Device {
+func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger, opts ...*DeviceOptions) *Device {
 	device := new(Device)
 	device.state.state = uint32(deviceStateDown)
 	device.closed = make(chan struct{})
 
-	device.createEndpoint = conn.CreateEndpoint
-	device.createBind = conn.CreateBind
 	switch len(opts) {
 	case 0:
 	case 1:
 		opt := opts[0]
 		device.handshakeDone = opt.HandshakeDone
 		device.prependKeyToEndpoint = true
-		device.createEndpoint = opt.CreateEndpoint
-		device.createBind = opt.CreateBind
-		device.skipBindUpdate = true
 	default:
 		panic("multiple DeviceOptions passed to NewDevice")
 	}
 
 	device.log = logger
+	device.net.bind = bind
 	device.tun.device = tunDevice
 	mtu, err := device.tun.device.MTU()
 	if err != nil {
@@ -334,11 +320,6 @@ func NewDevice(tunDevice tun.Device, logger *Logger, opts ...*DeviceOptions) *De
 	device.queue.handshake = newHandshakeQueue()
 	device.queue.encryption = newOutboundQueue()
 	device.queue.decryption = newInboundQueue()
-
-	// prepare net
-
-	device.net.port = 0
-	device.net.bind = nil
 
 	// start workers
 
@@ -439,7 +420,9 @@ func (device *Device) SendKeepalivesToPeersWithCurrentKeypair() {
 	device.peers.RUnlock()
 }
 
-func unsafeCloseBind(device *Device) error {
+// closeBindLocked closes the device's net.bind.
+// The caller must hold the net mutex.
+func closeBindLocked(device *Device) error {
 	var err error
 	netc := &device.net
 	if netc.netlinkCancel != nil {
@@ -447,7 +430,6 @@ func unsafeCloseBind(device *Device) error {
 	}
 	if netc.bind != nil {
 		err = netc.bind.Close()
-		netc.bind = nil
 	}
 	netc.stopping.Wait()
 	return err
@@ -494,13 +476,8 @@ func (device *Device) BindUpdate() error {
 	device.net.Lock()
 	defer device.net.Unlock()
 
-	if device.skipBindUpdate && device.net.bind != nil {
-		device.log.Verbosef("UDP bind update skipped")
-		return nil
-	}
-
 	// close existing sockets
-	if err := unsafeCloseBind(device); err != nil {
+	if err := closeBindLocked(device); err != nil {
 		return err
 	}
 
@@ -511,17 +488,16 @@ func (device *Device) BindUpdate() error {
 
 	// bind to new port
 	var err error
+	var recvFns []conn.ReceiveFunc
 	netc := &device.net
-	netc.bind, netc.port, err = device.createBind(netc.port)
+	recvFns, netc.port, err = netc.bind.Open(netc.port)
 	if err != nil {
-		netc.bind = nil
 		netc.port = 0
 		return err
 	}
 	netc.netlinkCancel, err = device.startRouteListener(netc.bind)
 	if err != nil {
 		netc.bind.Close()
-		netc.bind = nil
 		netc.port = 0
 		return err
 	}
@@ -546,11 +522,12 @@ func (device *Device) BindUpdate() error {
 	device.peers.RUnlock()
 
 	// start receiving routines
-	device.net.stopping.Add(2)
-	device.queue.decryption.wg.Add(2) // each RoutineReceiveIncoming goroutine writes to device.queue.decryption
-	device.queue.handshake.wg.Add(2)  // each RoutineReceiveIncoming goroutine writes to device.queue.handshake
-	go device.RoutineReceiveIncoming(ipv4.Version, netc.bind)
-	go device.RoutineReceiveIncoming(ipv6.Version, netc.bind)
+	device.net.stopping.Add(len(recvFns))
+	device.queue.decryption.wg.Add(len(recvFns)) // each RoutineReceiveIncoming goroutine writes to device.queue.decryption
+	device.queue.handshake.wg.Add(len(recvFns))  // each RoutineReceiveIncoming goroutine writes to device.queue.handshake
+	for _, fn := range recvFns {
+		go device.RoutineReceiveIncoming(fn)
+	}
 
 	device.log.Verbosef("UDP bind has been updated")
 	return nil
@@ -558,7 +535,7 @@ func (device *Device) BindUpdate() error {
 
 func (device *Device) BindClose() error {
 	device.net.Lock()
-	err := unsafeCloseBind(device)
+	err := closeBindLocked(device)
 	device.net.Unlock()
 	return err
 }

@@ -38,6 +38,8 @@ type NativeTun struct {
 	hackListenerClosed      sync.Mutex
 	statusListenersShutdown chan struct{}
 
+	closeOnce sync.Once
+
 	nameOnce  sync.Once // guards calling initNameCache, which sets following fields
 	nameCache string    // name of interface
 	nameErr   error
@@ -52,6 +54,11 @@ func (tun *NativeTun) routineHackListener() {
 	/* This is needed for the detection to work across network namespaces
 	 * If you are reading this and know a better method, please get in touch.
 	 */
+	last := 0
+	const (
+		up   = 1
+		down = 2
+	)
 	for {
 		sysconn, err := tun.tunFile.SyscallConn()
 		if err != nil {
@@ -65,13 +72,19 @@ func (tun *NativeTun) routineHackListener() {
 		}
 		switch err {
 		case unix.EINVAL:
-			// If the tunnel is up, it reports that write() is
-			// allowed but we provided invalid data.
-			tun.events <- EventUp
+			if last != up {
+				// If the tunnel is up, it reports that write() is
+				// allowed but we provided invalid data.
+				tun.events <- EventUp
+				last = up
+			}
 		case unix.EIO:
-			// If the tunnel is down, it reports that no I/O
-			// is possible, without checking our provided data.
-			tun.events <- EventDown
+			if last != down {
+				// If the tunnel is down, it reports that no I/O
+				// is possible, without checking our provided data.
+				tun.events <- EventDown
+				last = down
+			}
 		default:
 			return
 		}
@@ -371,17 +384,18 @@ func (tun *NativeTun) Events() chan Event {
 }
 
 func (tun *NativeTun) Close() error {
-	var err1 error
-	if tun.statusListenersShutdown != nil {
-		close(tun.statusListenersShutdown)
-		if tun.netlinkCancel != nil {
-			err1 = tun.netlinkCancel.Cancel()
+	var err1, err2 error
+	tun.closeOnce.Do(func() {
+		if tun.statusListenersShutdown != nil {
+			close(tun.statusListenersShutdown)
+			if tun.netlinkCancel != nil {
+				err1 = tun.netlinkCancel.Cancel()
+			}
+		} else if tun.events != nil {
+			close(tun.events)
 		}
-	} else if tun.events != nil {
-		close(tun.events)
-	}
-	err2 := tun.tunFile.Close()
-
+		err2 = tun.tunFile.Close()
+	})
 	if err1 != nil {
 		return err1
 	}

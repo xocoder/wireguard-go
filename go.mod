@@ -1,9 +1,9 @@
 module github.com/tailscale/wireguard-go
 
-go 1.15
+go 1.16
 
 require (
-	golang.org/x/crypto v0.0.0-20201221181555-eec23a3978ad
-	golang.org/x/net v0.0.0-20201224014010-6772e930b67b
-	golang.org/x/sys v0.0.0-20210105210732-16f7687f5001
+	golang.org/x/crypto v0.0.0-20210220033148-5ea612d1eb83
+	golang.org/x/net v0.0.0-20210226172049-e18ecbb05110
+	golang.org/x/sys v0.0.0-20210309040221-94ec62e08169
 )

@@ -11,9 +11,9 @@ import (
 	"os/signal"
 	"syscall"
 
+	"github.com/tailscale/wireguard-go/conn"
 	"github.com/tailscale/wireguard-go/device"
 	"github.com/tailscale/wireguard-go/ipc"
-
 	"github.com/tailscale/wireguard-go/tun"
 )
 
@@ -47,7 +47,7 @@ func main() {
 		os.Exit(ExitSetupFailed)
 	}
 
-	device := device.NewDevice(tun, logger)
+	device := device.NewDevice(tun, conn.NewDefaultBind(), logger)
 	err = device.Up()
 	if err != nil {
 		logger.Errorf("Failed to bring up device: %v", err)

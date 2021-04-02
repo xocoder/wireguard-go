@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"syscall"
 
+	"github.com/tailscale/wireguard-go/conn"
 	"github.com/tailscale/wireguard-go/device"
 	"github.com/tailscale/wireguard-go/ipc"
 	"github.com/tailscale/wireguard-go/tun"
@@ -219,7 +220,7 @@ func main() {
 		return
 	}
 
-	device := device.NewDevice(tun, logger)
+	device := device.NewDevice(tun, conn.NewDefaultBind(), logger)
 
 	logger.Verbosef("Device started")
 

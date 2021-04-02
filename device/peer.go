@@ -6,6 +6,7 @@
 package device
 
 import (
+	"container/list"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -17,15 +18,13 @@ import (
 )
 
 type Peer struct {
-	isRunning                   AtomicBool
-	sync.RWMutex                // Mostly protects endpoint, but is generally taken whenever we modify peer
-	keypairs                    Keypairs
-	handshake                   Handshake
-	device                      *Device
-	endpoint                    conn.Endpoint
-	persistentKeepaliveInterval uint32 // accessed atomically
-	firstTrieEntry              *trieEntry
-	stopping                    sync.WaitGroup // routines pending stop
+	isRunning    AtomicBool
+	sync.RWMutex // Mostly protects endpoint, but is generally taken whenever we modify peer
+	keypairs     Keypairs
+	handshake    Handshake
+	device       *Device
+	endpoint     conn.Endpoint
+	stopping     sync.WaitGroup // routines pending stop
 
 	// These fields are accessed with atomic operations, which must be
 	// 64-bit aligned even on 32-bit platforms. Go guarantees that an
@@ -61,7 +60,9 @@ type Peer struct {
 		inbound  *autodrainingInboundQueue  // sequential ordering of tun writing
 	}
 
-	cookieGenerator CookieGenerator
+	cookieGenerator             CookieGenerator
+	trieEntries                 list.List
+	persistentKeepaliveInterval uint32 // accessed atomically
 }
 
 func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
@@ -110,7 +111,6 @@ func (device *Device) NewPeer(pk NoisePublicKey) (*Peer, error) {
 
 	// add
 	device.peers.keyMap[pk] = peer
-	device.peers.empty.Set(false)
 
 	// start peer
 	peer.timersInit()
@@ -125,13 +125,8 @@ func (peer *Peer) SendBuffer(buffer []byte) error {
 	peer.device.net.RLock()
 	defer peer.device.net.RUnlock()
 
-	if peer.device.net.bind == nil {
-		// Packets can leak through to SendBuffer while the device is closing.
-		// When that happens, drop them silently to avoid spurious errors.
-		if peer.device.isClosed() {
-			return nil
-		}
-		return errors.New("no bind")
+	if peer.device.isClosed() {
+		return nil
 	}
 
 	peer.RLock()

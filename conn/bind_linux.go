@@ -1,5 +1,3 @@
-// +build !android
-
 /* SPDX-License-Identifier: MIT
  *
  * Copyright (C) 2017-2021 WireGuard LLC. All Rights Reserved.
@@ -18,55 +16,60 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-type IPv4Source struct {
+type ipv4Source struct {
 	Src     [4]byte
 	Ifindex int32
 }
 
-type IPv6Source struct {
+type ipv6Source struct {
 	src [16]byte
-	//ifindex belongs in dst.ZoneId
+	// ifindex belongs in dst.ZoneId
 }
 
-type NativeEndpoint struct {
-	sync.Mutex
+type LinuxSocketEndpoint struct {
+	mu   sync.Mutex
 	dst  [unsafe.Sizeof(unix.SockaddrInet6{})]byte
-	src  [unsafe.Sizeof(IPv6Source{})]byte
+	src  [unsafe.Sizeof(ipv6Source{})]byte
 	isV6 bool
 }
 
-func (endpoint *NativeEndpoint) Src4() *IPv4Source         { return endpoint.src4() }
-func (endpoint *NativeEndpoint) Dst4() *unix.SockaddrInet4 { return endpoint.dst4() }
-func (endpoint *NativeEndpoint) IsV6() bool                { return endpoint.isV6 }
+func (endpoint *LinuxSocketEndpoint) Src4() *ipv4Source         { return endpoint.src4() }
+func (endpoint *LinuxSocketEndpoint) Dst4() *unix.SockaddrInet4 { return endpoint.dst4() }
+func (endpoint *LinuxSocketEndpoint) IsV6() bool                { return endpoint.isV6 }
 
-func (endpoint *NativeEndpoint) src4() *IPv4Source {
-	return (*IPv4Source)(unsafe.Pointer(&endpoint.src[0]))
+func (endpoint *LinuxSocketEndpoint) src4() *ipv4Source {
+	return (*ipv4Source)(unsafe.Pointer(&endpoint.src[0]))
 }
 
-func (endpoint *NativeEndpoint) src6() *IPv6Source {
-	return (*IPv6Source)(unsafe.Pointer(&endpoint.src[0]))
+func (endpoint *LinuxSocketEndpoint) src6() *ipv6Source {
+	return (*ipv6Source)(unsafe.Pointer(&endpoint.src[0]))
 }
 
-func (endpoint *NativeEndpoint) dst4() *unix.SockaddrInet4 {
+func (endpoint *LinuxSocketEndpoint) dst4() *unix.SockaddrInet4 {
 	return (*unix.SockaddrInet4)(unsafe.Pointer(&endpoint.dst[0]))
 }
 
-func (endpoint *NativeEndpoint) dst6() *unix.SockaddrInet6 {
+func (endpoint *LinuxSocketEndpoint) dst6() *unix.SockaddrInet6 {
 	return (*unix.SockaddrInet6)(unsafe.Pointer(&endpoint.dst[0]))
 }
 
-type nativeBind struct {
-	sock4    int
-	sock6    int
-	lastMark uint32
-	closing  sync.RWMutex
+// LinuxSocketBind uses sendmsg and recvmsg to implement a full bind with sticky sockets on Linux.
+type LinuxSocketBind struct {
+	// mu guards sock4 and sock6 and the associated fds.
+	// As long as someone holds mu (read or write), the associated fds are valid.
+	mu    sync.RWMutex
+	sock4 int
+	sock6 int
 }
 
-var _ Endpoint = (*NativeEndpoint)(nil)
-var _ Bind = (*nativeBind)(nil)
+func NewLinuxSocketBind() Bind { return &LinuxSocketBind{sock4: -1, sock6: -1} }
+func NewDefaultBind() Bind     { return NewLinuxSocketBind() }
 
-func CreateEndpoint(s string) (Endpoint, error) {
-	var end NativeEndpoint
+var _ Endpoint = (*LinuxSocketEndpoint)(nil)
+var _ Bind = (*LinuxSocketBind)(nil)
+
+func (*LinuxSocketBind) ParseEndpoint(s string) (Endpoint, error) {
+	var end LinuxSocketEndpoint
 	addr, err := parseEndpoint(s)
 	if err != nil {
 		return nil, err
@@ -97,22 +100,30 @@ func CreateEndpoint(s string) (Endpoint, error) {
 		return &end, nil
 	}
 
-	return nil, errors.New("Invalid IP address")
+	return nil, errors.New("invalid IP address")
 }
 
-func createBind(port uint16) (Bind, uint16, error) {
+func (bind *LinuxSocketBind) Open(port uint16) ([]ReceiveFunc, uint16, error) {
+	bind.mu.Lock()
+	defer bind.mu.Unlock()
+
 	var err error
-	var bind nativeBind
 	var newPort uint16
 	var tries int
+
+	if bind.sock4 != -1 || bind.sock6 != -1 {
+		return nil, 0, ErrBindAlreadyOpen
+	}
+
 	originalPort := port
 
 again:
 	port = originalPort
+	var sock4, sock6 int
 	// Attempt ipv6 bind, update port if successful.
-	bind.sock6, newPort, err = create6(port)
+	sock6, newPort, err = create6(port)
 	if err != nil {
-		if err != syscall.EAFNOSUPPORT {
+		if !errors.Is(err, syscall.EAFNOSUPPORT) {
 			return nil, 0, err
 		}
 	} else {
@@ -120,35 +131,39 @@ again:
 	}
 
 	// Attempt ipv4 bind, update port if successful.
-	bind.sock4, newPort, err = create4(port)
+	sock4, newPort, err = create4(port)
 	if err != nil {
-		if originalPort == 0 && err == syscall.EADDRINUSE && tries < 100 {
-			unix.Close(bind.sock6)
+		if originalPort == 0 && errors.Is(err, syscall.EADDRINUSE) && tries < 100 {
+			unix.Close(sock6)
 			tries++
 			goto again
 		}
-		if err != syscall.EAFNOSUPPORT {
-			unix.Close(bind.sock6)
+		if !errors.Is(err, syscall.EAFNOSUPPORT) {
+			unix.Close(sock6)
 			return nil, 0, err
 		}
 	} else {
 		port = newPort
 	}
 
-	if bind.sock4 == -1 && bind.sock6 == -1 {
-		return nil, 0, errors.New("ipv4 and ipv6 not supported")
+	var fns []ReceiveFunc
+	if sock4 != -1 {
+		fns = append(fns, makeReceiveIPv4(sock4))
+		bind.sock4 = sock4
 	}
-
-	return &bind, port, nil
+	if sock6 != -1 {
+		fns = append(fns, makeReceiveIPv6(sock6))
+		bind.sock6 = sock6
+	}
+	if len(fns) == 0 {
+		return nil, 0, syscall.EAFNOSUPPORT
+	}
+	return fns, port, nil
 }
 
-func (bind *nativeBind) LastMark() uint32 {
-	return bind.lastMark
-}
-
-func (bind *nativeBind) SetMark(value uint32) error {
-	bind.closing.RLock()
-	defer bind.closing.RUnlock()
+func (bind *LinuxSocketBind) SetMark(value uint32) error {
+	bind.mu.RLock()
+	defer bind.mu.RUnlock()
 
 	if bind.sock6 != -1 {
 		err := unix.SetsockoptInt(
@@ -176,21 +191,24 @@ func (bind *nativeBind) SetMark(value uint32) error {
 		}
 	}
 
-	bind.lastMark = value
 	return nil
 }
 
-func (bind *nativeBind) Close() error {
-	var err1, err2 error
-	bind.closing.RLock()
+func (bind *LinuxSocketBind) Close() error {
+	// Take a readlock to shut down the sockets...
+	bind.mu.RLock()
 	if bind.sock6 != -1 {
 		unix.Shutdown(bind.sock6, unix.SHUT_RDWR)
 	}
 	if bind.sock4 != -1 {
 		unix.Shutdown(bind.sock4, unix.SHUT_RDWR)
 	}
-	bind.closing.RUnlock()
-	bind.closing.Lock()
+	bind.mu.RUnlock()
+	// ...and a write lock to close the fd.
+	// This ensures that no one else is using the fd.
+	bind.mu.Lock()
+	defer bind.mu.Unlock()
+	var err1, err2 error
 	if bind.sock6 != -1 {
 		err1 = unix.Close(bind.sock6)
 		bind.sock6 = -1
@@ -199,7 +217,6 @@ func (bind *nativeBind) Close() error {
 		err2 = unix.Close(bind.sock4)
 		bind.sock4 = -1
 	}
-	bind.closing.Unlock()
 
 	if err1 != nil {
 		return err1
@@ -207,57 +224,43 @@ func (bind *nativeBind) Close() error {
 	return err2
 }
 
-func (bind *nativeBind) ReceiveIPv6(buff []byte) (int, Endpoint, error) {
-	bind.closing.RLock()
-	defer bind.closing.RUnlock()
-
-	var end NativeEndpoint
-	if bind.sock6 == -1 {
-		return 0, nil, NetErrClosed
+func makeReceiveIPv6(sock int) ReceiveFunc {
+	return func(buff []byte) (int, Endpoint, error) {
+		var end LinuxSocketEndpoint
+		n, err := receive6(sock, buff, &end)
+		return n, &end, err
 	}
-	n, err := receive6(
-		bind.sock6,
-		buff,
-		&end,
-	)
-	return n, &end, err
 }
 
-func (bind *nativeBind) ReceiveIPv4(buff []byte) (int, Endpoint, error) {
-	bind.closing.RLock()
-	defer bind.closing.RUnlock()
-
-	var end NativeEndpoint
-	if bind.sock4 == -1 {
-		return 0, nil, NetErrClosed
+func makeReceiveIPv4(sock int) ReceiveFunc {
+	return func(buff []byte) (int, Endpoint, error) {
+		var end LinuxSocketEndpoint
+		n, err := receive4(sock, buff, &end)
+		return n, &end, err
 	}
-	n, err := receive4(
-		bind.sock4,
-		buff,
-		&end,
-	)
-	return n, &end, err
 }
 
-func (bind *nativeBind) Send(buff []byte, end Endpoint) error {
-	bind.closing.RLock()
-	defer bind.closing.RUnlock()
-
-	nend := end.(*NativeEndpoint)
+func (bind *LinuxSocketBind) Send(buff []byte, end Endpoint) error {
+	nend, ok := end.(*LinuxSocketEndpoint)
+	if !ok {
+		return ErrWrongEndpointType
+	}
+	bind.mu.RLock()
+	defer bind.mu.RUnlock()
 	if !nend.isV6 {
 		if bind.sock4 == -1 {
-			return NetErrClosed
+			return net.ErrClosed
 		}
 		return send4(bind.sock4, nend, buff)
 	} else {
 		if bind.sock6 == -1 {
-			return NetErrClosed
+			return net.ErrClosed
 		}
 		return send6(bind.sock6, nend, buff)
 	}
 }
 
-func (end *NativeEndpoint) SrcIP() net.IP {
+func (end *LinuxSocketEndpoint) SrcIP() net.IP {
 	if !end.isV6 {
 		return net.IPv4(
 			end.src4().Src[0],
@@ -270,7 +273,7 @@ func (end *NativeEndpoint) SrcIP() net.IP {
 	}
 }
 
-func (end *NativeEndpoint) DstIP() net.IP {
+func (end *LinuxSocketEndpoint) DstIP() net.IP {
 	if !end.isV6 {
 		return net.IPv4(
 			end.dst4().Addr[0],
@@ -283,7 +286,7 @@ func (end *NativeEndpoint) DstIP() net.IP {
 	}
 }
 
-func (end *NativeEndpoint) DstToBytes() []byte {
+func (end *LinuxSocketEndpoint) DstToBytes() []byte {
 	if !end.isV6 {
 		return (*[unsafe.Offsetof(end.dst4().Addr) + unsafe.Sizeof(end.dst4().Addr)]byte)(unsafe.Pointer(end.dst4()))[:]
 	} else {
@@ -291,11 +294,11 @@ func (end *NativeEndpoint) DstToBytes() []byte {
 	}
 }
 
-func (end *NativeEndpoint) SrcToString() string {
+func (end *LinuxSocketEndpoint) SrcToString() string {
 	return end.SrcIP().String()
 }
 
-func (end *NativeEndpoint) DstToString() string {
+func (end *LinuxSocketEndpoint) DstToString() string {
 	var udpAddr net.UDPAddr
 	udpAddr.IP = end.DstIP()
 	if !end.isV6 {
@@ -306,13 +309,13 @@ func (end *NativeEndpoint) DstToString() string {
 	return udpAddr.String()
 }
 
-func (end *NativeEndpoint) ClearDst() {
+func (end *LinuxSocketEndpoint) ClearDst() {
 	for i := range end.dst {
 		end.dst[i] = 0
 	}
 }
 
-func (end *NativeEndpoint) ClearSrc() {
+func (end *LinuxSocketEndpoint) ClearSrc() {
 	for i := range end.src {
 		end.src[i] = 0
 	}
@@ -427,7 +430,7 @@ func create6(port uint16) (int, uint16, error) {
 	return fd, uint16(addr.Port), err
 }
 
-func send4(sock int, end *NativeEndpoint, buff []byte) error {
+func send4(sock int, end *LinuxSocketEndpoint, buff []byte) error {
 
 	// construct message header
 
@@ -446,9 +449,9 @@ func send4(sock int, end *NativeEndpoint, buff []byte) error {
 		},
 	}
 
-	end.Lock()
+	end.mu.Lock()
 	_, err := unix.SendmsgN(sock, buff, (*[unsafe.Sizeof(cmsg)]byte)(unsafe.Pointer(&cmsg))[:], end.dst4(), 0)
-	end.Unlock()
+	end.mu.Unlock()
 
 	if err == nil {
 		return nil
@@ -459,15 +462,15 @@ func send4(sock int, end *NativeEndpoint, buff []byte) error {
 	if err == unix.EINVAL {
 		end.ClearSrc()
 		cmsg.pktinfo = unix.Inet4Pktinfo{}
-		end.Lock()
+		end.mu.Lock()
 		_, err = unix.SendmsgN(sock, buff, (*[unsafe.Sizeof(cmsg)]byte)(unsafe.Pointer(&cmsg))[:], end.dst4(), 0)
-		end.Unlock()
+		end.mu.Unlock()
 	}
 
 	return err
 }
 
-func send6(sock int, end *NativeEndpoint, buff []byte) error {
+func send6(sock int, end *LinuxSocketEndpoint, buff []byte) error {
 
 	// construct message header
 
@@ -490,9 +493,9 @@ func send6(sock int, end *NativeEndpoint, buff []byte) error {
 		cmsg.pktinfo.Ifindex = 0
 	}
 
-	end.Lock()
+	end.mu.Lock()
 	_, err := unix.SendmsgN(sock, buff, (*[unsafe.Sizeof(cmsg)]byte)(unsafe.Pointer(&cmsg))[:], end.dst6(), 0)
-	end.Unlock()
+	end.mu.Unlock()
 
 	if err == nil {
 		return nil
@@ -503,15 +506,15 @@ func send6(sock int, end *NativeEndpoint, buff []byte) error {
 	if err == unix.EINVAL {
 		end.ClearSrc()
 		cmsg.pktinfo = unix.Inet6Pktinfo{}
-		end.Lock()
+		end.mu.Lock()
 		_, err = unix.SendmsgN(sock, buff, (*[unsafe.Sizeof(cmsg)]byte)(unsafe.Pointer(&cmsg))[:], end.dst6(), 0)
-		end.Unlock()
+		end.mu.Unlock()
 	}
 
 	return err
 }
 
-func receive4(sock int, buff []byte, end *NativeEndpoint) (int, error) {
+func receive4(sock int, buff []byte, end *LinuxSocketEndpoint) (int, error) {
 
 	// construct message header
 
@@ -543,7 +546,7 @@ func receive4(sock int, buff []byte, end *NativeEndpoint) (int, error) {
 	return size, nil
 }
 
-func receive6(sock int, buff []byte, end *NativeEndpoint) (int, error) {
+func receive6(sock int, buff []byte, end *LinuxSocketEndpoint) (int, error) {
 
 	// construct message header
 
