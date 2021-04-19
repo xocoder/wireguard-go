@@ -47,7 +47,7 @@ func (rb *ringBuffer) Push() *ringPacket {
 	}
 	ret := (*ringPacket)(unsafe.Pointer(rb.packets + (uintptr(rb.tail%packetsPerRing) * unsafe.Sizeof(ringPacket{}))))
 	rb.tail += 1
-	if rb.tail == rb.head {
+	if rb.tail%packetsPerRing == rb.head%packetsPerRing {
 		rb.isFull = true
 	}
 	return ret
@@ -197,6 +197,9 @@ func (ring *ringBuffer) CloseAndZero() {
 		windows.VirtualFree(ring.packets, 0, windows.MEM_RELEASE)
 		ring.packets = 0
 	}
+	ring.head = 0
+	ring.tail = 0
+	ring.isFull = false
 }
 
 func (bind *afWinRingBind) CloseAndZero() {
