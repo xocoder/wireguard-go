@@ -95,9 +95,11 @@ func (device *Device) RoutineReceiveIncoming(recv conn.ReceiveFunc) {
 		if err != nil {
 			device.PutMessageBuffer(buffer)
 			if errors.Is(err, net.ErrClosed) {
+				device.log.Errorf("Routine: receive incoming %s - recv closed: %v", recvName, err)
 				return
 			}
 			if neterr, ok := err.(net.Error); ok && !neterr.Temporary() {
+				device.log.Errorf("Routine: receive incoming %s - recv: %v", recvName, err)
 				return
 			}
 			device.log.Errorf("Failed to receive packet: %v", err)
