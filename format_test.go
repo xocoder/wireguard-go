@@ -10,11 +10,15 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 )
 
 func TestFormatting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows checkouts use CRLF, which doesn't play nicely with gofmt")
+	}
 	var wg sync.WaitGroup
 	filepath.WalkDir(".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
