@@ -98,6 +98,7 @@ func (device *Device) RoutineReceiveIncoming(recv conn.ReceiveFunc) {
 			if errors.Is(err, net.ErrClosed) {
 				return
 			}
+			device.log.Verbosef("Failed to receive %s packet: %v", recvName, err)
 			if neterr, ok := err.(net.Error); ok && !neterr.Temporary() {
 				return
 			}
@@ -202,11 +203,11 @@ func (device *Device) RoutineReceiveIncoming(recv conn.ReceiveFunc) {
 	}
 }
 
-func (device *Device) RoutineDecryption() {
+func (device *Device) RoutineDecryption(id int) {
 	var nonce [chacha20poly1305.NonceSize]byte
 
-	defer device.log.Verbosef("Routine: decryption worker - stopped")
-	device.log.Verbosef("Routine: decryption worker - started")
+	defer device.log.Verbosef("Routine: decryption worker %d - stopped", id)
+	device.log.Verbosef("Routine: decryption worker %d - started", id)
 
 	for elem := range device.queue.decryption.c {
 		// split message into fields
@@ -233,12 +234,12 @@ func (device *Device) RoutineDecryption() {
 
 /* Handles incoming packets related to handshake
  */
-func (device *Device) RoutineHandshake() {
+func (device *Device) RoutineHandshake(id int) {
 	defer func() {
-		device.log.Verbosef("Routine: handshake worker - stopped")
+		device.log.Verbosef("Routine: handshake worker %d - stopped", id)
 		device.queue.encryption.wg.Done()
 	}()
-	device.log.Verbosef("Routine: handshake worker - started")
+	device.log.Verbosef("Routine: handshake worker %d - started", id)
 
 	for elem := range device.queue.handshake.c {
 
