@@ -93,7 +93,6 @@ func (device *Device) RoutineReceiveIncoming(recv conn.ReceiveFunc) {
 		size, endpoint, err = recv(buffer[:])
 
 		if err != nil {
-			device.log.Verbosef("Routine: receive incoming %s - failed to receive packet: %v", recvName, err)
 			device.PutMessageBuffer(buffer)
 			if errors.Is(err, net.ErrClosed) {
 				return
