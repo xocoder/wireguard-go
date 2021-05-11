@@ -278,7 +278,6 @@ func NewDevice(tunDevice tun.Device, bind conn.Bind, logger *Logger) *Device {
 	device := new(Device)
 	device.state.state = uint32(deviceStateDown)
 	device.closed = make(chan struct{})
-
 	device.log = logger
 	device.net.bind = bind
 	device.tun.device = tunDevice
