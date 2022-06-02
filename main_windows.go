@@ -75,7 +75,7 @@ func main() {
 			go device.IpcHandle(conn)
 		}
 	}()
-	logger.Verbosef("UAPI listener started")
+	logger.Verbosef("UAPI listener started!")
 
 	// wait for program to terminate
 
